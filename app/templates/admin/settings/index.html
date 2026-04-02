@@ -1,0 +1,704 @@
+{% extends "base.html" %}
+
+{% block title %}系统设置 - GPT Team 管理系统{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>系统设置</h2>
+</div>
+<div class="settings-top-nav">
+    <a href="#settings-proxy" class="settings-nav-pill settings-nav-link" data-target="settings-proxy">代理配置</a>
+    <a href="#settings-password" class="settings-nav-pill settings-nav-link" data-target="settings-password">修改密码</a>
+    <a href="#settings-log" class="settings-nav-pill settings-nav-link" data-target="settings-log">日志级别</a>
+    <a href="#settings-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-refresh">Token 预刷新</a>
+    <a href="#settings-team-auto-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-team-auto-refresh">Team 自动刷新</a>
+    <a href="#settings-warranty" class="settings-nav-pill settings-nav-link" data-target="settings-warranty">质保设置</a>
+    <a href="#settings-team-import" class="settings-nav-pill settings-nav-link" data-target="settings-team-import">Team 导入</a>
+    <a href="#settings-cliproxyapi" class="settings-nav-pill settings-nav-link" data-target="settings-cliproxyapi">CliproxyAPI 推送</a>
+    <a href="#settings-ui-theme" class="settings-nav-pill settings-nav-link" data-target="settings-ui-theme">系统配色</a>
+    <a href="#settings-webhook" class="settings-nav-pill settings-nav-link" data-target="settings-webhook">库存预警</a>
+</div>
+
+<!-- 代理配置 -->
+<div class="content-section settings-panel" id="settings-proxy">
+    <div class="section-header">
+        <h3>代理配置</h3>
+    </div>
+
+    <form id="proxyForm" class="settings-form">
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="proxyEnabled" name="enabled" {% if proxy_enabled %}checked{% endif %}>
+                <span>启用代理</span>
+            </label>
+            <p class="form-help">启用后,所有ChatGPT API请求将通过代理服务器</p>
+        </div>
+
+        <div class="form-group">
+            <label for="proxyUrl">代理地址</label>
+            <input type="text" id="proxyUrl" name="proxy" value="{{ proxy or '' }}"
+                placeholder="http://127.0.0.1:7890, socks5://127.0.0.1:1080 或 socks5h://127.0.0.1:1080"
+                class="form-control">
+            <p class="form-help">支持HTTP、SOCKS5和SOCKS5H (远程DNS解析) 代理</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存代理配置</button>
+    </form>
+</div>
+
+<!-- 密码修改 -->
+<div class="content-section settings-panel" id="settings-password">
+    <div class="section-header">
+        <h3>修改密码</h3>
+    </div>
+
+    <form id="passwordForm" class="settings-form">
+        <div class="form-group">
+            <label for="oldPassword">旧密码</label>
+            <input type="password" id="oldPassword" name="old_password" required class="form-control"
+                placeholder="请输入当前密码">
+        </div>
+
+        <div class="form-group">
+            <label for="newPassword">新密码</label>
+            <input type="password" id="newPassword" name="new_password" required minlength="6" class="form-control"
+                placeholder="请输入新密码(至少6位)">
+        </div>
+
+        <div class="form-group">
+            <label for="confirmPassword">确认新密码</label>
+            <input type="password" id="confirmPassword" name="confirm_password" required minlength="6"
+                class="form-control" placeholder="请再次输入新密码">
+        </div>
+
+        <button type="submit" class="btn btn-primary">修改密码</button>
+        <p class="form-help">修改密码后需要重新登录</p>
+    </form>
+</div>
+
+<!-- 日志级别 -->
+<div class="content-section settings-panel" id="settings-log">
+    <div class="section-header">
+        <h3>日志级别</h3>
+    </div>
+
+    <form id="logLevelForm" class="settings-form">
+        <div class="form-group">
+            <label for="logLevel">日志级别</label>
+            <select id="logLevel" name="level" class="form-control">
+                <option value="DEBUG" {% if log_level=='DEBUG' %}selected{% endif %}>DEBUG - 调试信息</option>
+                <option value="INFO" {% if log_level=='INFO' %}selected{% endif %}>INFO - 一般信息</option>
+                <option value="WARNING" {% if log_level=='WARNING' %}selected{% endif %}>WARNING - 警告信息</option>
+                <option value="ERROR" {% if log_level=='ERROR' %}selected{% endif %}>ERROR - 错误信息</option>
+                <option value="CRITICAL" {% if log_level=='CRITICAL' %}selected{% endif %}>CRITICAL - 严重错误</option>
+            </select>
+            <p class="form-help">调整系统日志的详细程度,DEBUG级别会记录最详细的信息</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存日志级别</button>
+    </form>
+</div>
+
+
+
+<!-- Token 自动刷新配置 -->
+<div class="content-section settings-panel" id="settings-refresh">
+    <div class="section-header">
+        <h3>Token 自动刷新</h3>
+    </div>
+
+    <form id="tokenRefreshForm" class="settings-form">
+        <div class="form-group">
+            <label for="tokenRefreshInterval">刷新检查间隔 (分钟)</label>
+            <input type="number" id="tokenRefreshInterval" name="interval_minutes"
+                value="{{ token_refresh_interval_minutes or '30' }}" min="5" max="1440" class="form-control">
+            <p class="form-help">定时任务执行频率，建议 30 分钟</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tokenRefreshWindow">提前刷新窗口 (小时)</label>
+            <input type="number" id="tokenRefreshWindow" name="window_hours"
+                value="{{ token_refresh_window_hours or '2' }}" min="1" max="24" class="form-control">
+            <p class="form-help">当 Access Token 距离过期小于此窗口时触发自动刷新</p>
+        </div>
+
+        <div class="form-group">
+            <label for="tokenRefreshClientId">默认 OAuth Client ID</label>
+            <input type="text" id="tokenRefreshClientId" name="client_id" value="{{ token_refresh_client_id or '' }}"
+                placeholder="用于 refresh_token 换新 AT（导入时未填写 client_id 则使用此值）" class="form-control">
+            <p class="form-help">建议填写你当前使用的 OpenAI OAuth Client ID，便于 RT 刷新流程统一配置</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存 Token 刷新配置</button>
+    </form>
+</div>
+
+<!-- Team 自动刷新配置 -->
+<div class="content-section settings-panel" id="settings-team-auto-refresh">
+    <div class="section-header">
+        <h3>Team 自动刷新</h3>
+    </div>
+
+    <form id="teamAutoRefreshForm" class="settings-form">
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="teamAutoRefreshEnabled" name="enabled" {% if (periodic_team_sync_enabled or 'true')|lower in ['1','true','yes','on'] %}checked{% endif %}>
+                <span>启用 Team 周期状态自动刷新</span>
+            </label>
+            <p class="form-help">关闭后将不再自动检查 Team 状态，仅可手动刷新。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="teamAutoRefreshInterval">检查间隔 (小时)</label>
+            <input type="number" id="teamAutoRefreshInterval" name="interval_hours"
+                value="{{ periodic_team_sync_interval_hours or '12' }}" min="1" max="168" class="form-control">
+            <p class="form-help">定时任务运行频率。建议 6~24 小时。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="teamAutoRefreshDays">触发刷新阈值 (天)</label>
+            <input type="number" id="teamAutoRefreshDays" name="refresh_interval_days"
+                value="{{ periodic_team_sync_days or '7' }}" min="1" max="30" class="form-control">
+            <p class="form-help">当 Team 距上次同步达到该天数时，自动执行状态刷新。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存 Team 自动刷新配置</button>
+    </form>
+</div>
+
+
+<!-- 质保设置 -->
+<div class="content-section settings-panel" id="settings-warranty">
+    <div class="section-header">
+        <h3>质保设置</h3>
+    </div>
+
+    <form id="warrantySettingsForm" class="settings-form">
+        <div class="form-group">
+            <label for="warrantyExpirationMode">质保时长计算方式</label>
+            <select id="warrantyExpirationMode" name="expiration_mode" class="form-control">
+                <option value="first_use" {% if (warranty_expiration_mode or 'first_use') == 'first_use' %}selected{% endif %}>
+                    首次使用后开始计算
+                </option>
+                <option value="refresh_on_redeem" {% if warranty_expiration_mode == 'refresh_on_redeem' %}selected{% endif %}>
+                    每次质保重兑成功后刷新
+                </option>
+            </select>
+            <p class="form-help">默认推荐“首次使用后开始计算”。开启刷新模式后，用户每次质保重兑成功都会重新获得完整质保时长。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存质保设置</button>
+    </form>
+</div>
+
+
+<!-- Team 导入配置 -->
+<div class="content-section settings-panel" id="settings-team-import">
+    <div class="section-header">
+        <h3>Team 导入</h3>
+    </div>
+
+    <form id="teamImportForm" class="settings-form">
+        <div class="form-group">
+            <label for="defaultTeamMaxMembers">默认总席位</label>
+            <input type="number" id="defaultTeamMaxMembers" name="default_team_max_members"
+                value="{{ default_team_max_members or '6' }}" min="1" max="100" class="form-control">
+            <p class="form-help">新导入 Team 时写入的默认总席位。默认值为 6，仅影响后续新导入的数据。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存 Team 导入配置</button>
+    </form>
+</div>
+
+<!-- CliproxyAPI 推送配置 -->
+<div class="content-section settings-panel" id="settings-cliproxyapi">
+    <div class="section-header">
+        <h3>CliproxyAPI 推送</h3>
+    </div>
+
+    <form id="cliproxyapiForm" class="settings-form">
+        <div class="form-group">
+            <label for="cliproxyapiBaseUrl">站点地址</label>
+            <input type="text" id="cliproxyapiBaseUrl" name="base_url" value="{{ cliproxyapi_base_url or '' }}"
+                placeholder="https://cli-proxy-api.example.com" class="form-control">
+            <p class="form-help">填写 CliproxyAPI 站点根地址，保存时会自动去掉末尾斜杠。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="cliproxyapiApiKey">管理密钥</label>
+            <input type="password" id="cliproxyapiApiKey" name="api_key" value="{{ cliproxyapi_api_key or '' }}"
+                placeholder="Bearer 管理密钥中的原始 token 值" class="form-control">
+            <p class="form-help">保存后，Team 列表中的单条/批量推送都会使用该密钥调用 `/v0/management/auth-files`。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存 CliproxyAPI 配置</button>
+    </form>
+</div>
+
+<!-- 系统配色 -->
+<div class="content-section settings-panel" id="settings-ui-theme">
+    <div class="section-header">
+        <h3>系统配色</h3>
+    </div>
+
+    <form id="uiThemeForm" class="settings-form">
+        <div class="form-group">
+            <label for="uiThemeSelect">当前配色方案</label>
+            <select id="uiThemeSelect" name="theme" class="form-control">
+                <option value="ocean" {% if ui_theme == 'ocean' %}selected{% endif %}>深海蓝（默认）</option>
+                <option value="warm" {% if ui_theme == 'warm' %}selected{% endif %}>暖杏米（新配色）</option>
+            </select>
+            <p class="form-help">保存后控制台和兑换页会统一使用同一套配色。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存系统配色</button>
+    </form>
+</div>
+
+<!-- Webhook 配置 -->
+<div class="content-section settings-panel" id="settings-webhook">
+    <div class="section-header">
+        <h3>库存预警 Webhook</h3>
+    </div>
+
+    <form id="webhookForm" class="settings-form">
+        <div class="form-group">
+            <label for="webhookUrl">Webhook URL</label>
+            <input type="text" id="webhookUrl" name="webhook_url" value="{{ webhook_url or '' }}"
+                placeholder="https://your-api.com/webhook" class="form-control">
+            <p class="form-help">当系统总剩余车位低于阈值时,系统将向此URL发送POST请求</p>
+        </div>
+
+        <div class="form-group">
+            <label for="lowStockThreshold">车位预警阈值</label>
+            <input type="number" id="lowStockThreshold" name="low_stock_threshold"
+                value="{{ low_stock_threshold or '10' }}" min="0" class="form-control">
+            <p class="form-help">全系统所有活跃 Team 的总剩余车位低于或等于此数值时触发补货通知</p>
+        </div>
+
+        <div class="form-group">
+            <label for="apiKey">API Key (用于补货对接)</label>
+            <input type="text" id="apiKey" name="api_key" value="{{ api_key or '' }}"
+                placeholder="用于外部程序调用的密钥 (X-API-Key)" class="form-control">
+            <p class="form-help">设置后,第三方程序可以通过 Header `X-API-Key` 认证管理员接口</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存配置</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .checkbox-label {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .form-help {
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        margin-top: 0.375rem;
+    }
+
+    .settings-panel {
+        display: none;
+    }
+
+    .settings-panel.active {
+        display: block;
+    }
+
+    .settings-nav-pill.active {
+        color: var(--text-main);
+        border-color: var(--primary);
+        background: var(--primary-soft);
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 系统设置分区导航（单屏切换）
+    (function initSettingsPanels() {
+        const links = Array.from(document.querySelectorAll('.settings-nav-link'));
+        const panels = Array.from(document.querySelectorAll('.settings-panel'));
+
+        const activate = (targetId, pushHash = true) => {
+            const safeTarget = panels.some(p => p.id === targetId) ? targetId : 'settings-proxy';
+            panels.forEach(panel => panel.classList.toggle('active', panel.id === safeTarget));
+            links.forEach(link => link.classList.toggle('active', link.dataset.target === safeTarget));
+            if (pushHash) {
+                history.replaceState(null, '', `#${safeTarget}`);
+            }
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        links.forEach(link => {
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                activate(link.dataset.target);
+            });
+        });
+
+        const initial = (window.location.hash || '').replace('#', '') || 'settings-proxy';
+        activate(initial, false);
+    })();
+
+    // 代理配置表单
+    document.getElementById('proxyForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const enabled = document.getElementById('proxyEnabled').checked;
+        const proxy = document.getElementById('proxyUrl').value.trim();
+
+        // 验证
+        if (enabled && !proxy) {
+            showToast('请输入代理地址', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/proxy', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ enabled, proxy })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('代理配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // 密码修改表单
+    document.getElementById('passwordForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const oldPassword = document.getElementById('oldPassword').value;
+        const newPassword = document.getElementById('newPassword').value;
+        const confirmPassword = document.getElementById('confirmPassword').value;
+
+        // 验证
+        if (newPassword.length < 6) {
+            showToast('新密码至少6位', 'error');
+            return;
+        }
+
+        if (newPassword !== confirmPassword) {
+            showToast('两次输入的密码不一致', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/auth/change-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    old_password: oldPassword,
+                    new_password: newPassword
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('密码修改成功,即将跳转到登录页', 'success');
+                setTimeout(() => {
+                    window.location.href = '/login';
+                }, 2000);
+            } else {
+                showToast(data.error || '修改失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // 日志级别表单
+    document.getElementById('logLevelForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const level = document.getElementById('logLevel').value;
+
+        try {
+            const response = await fetch('/admin/settings/log-level', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ level })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('日志级别已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+
+    // Token 自动刷新配置表单
+    document.getElementById('tokenRefreshForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const interval_minutes = parseInt(document.getElementById('tokenRefreshInterval').value);
+        const window_hours = parseInt(document.getElementById('tokenRefreshWindow').value);
+        const client_id = document.getElementById('tokenRefreshClientId').value.trim();
+
+        if (isNaN(interval_minutes) || interval_minutes < 5 || interval_minutes > 1440) {
+            showToast('刷新间隔必须在 5~1440 分钟之间', 'error');
+            return;
+        }
+
+        if (isNaN(window_hours) || window_hours < 1 || window_hours > 24) {
+            showToast('提前刷新窗口必须在 1~24 小时之间', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/token-refresh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ interval_minutes, window_hours, client_id })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || 'Token 刷新配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Team 自动刷新配置表单
+    document.getElementById('teamAutoRefreshForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const enabled = document.getElementById('teamAutoRefreshEnabled').checked;
+        const interval_hours = parseInt(document.getElementById('teamAutoRefreshInterval').value);
+        const refresh_interval_days = parseInt(document.getElementById('teamAutoRefreshDays').value);
+
+        if (isNaN(interval_hours) || interval_hours < 1 || interval_hours > 168) {
+            showToast('检查间隔必须在 1~168 小时之间', 'error');
+            return;
+        }
+
+        if (isNaN(refresh_interval_days) || refresh_interval_days < 1 || refresh_interval_days > 30) {
+            showToast('触发刷新阈值必须在 1~30 天之间', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/team-auto-refresh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ enabled, interval_hours, refresh_interval_days })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || 'Team 自动刷新配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // 质保设置表单
+    document.getElementById('warrantySettingsForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const expiration_mode = document.getElementById('warrantyExpirationMode').value;
+
+        try {
+            const response = await fetch('/admin/settings/warranty', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ expiration_mode })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || '质保设置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Team 导入配置表单
+    document.getElementById('teamImportForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const default_team_max_members = parseInt(document.getElementById('defaultTeamMaxMembers').value);
+
+        if (isNaN(default_team_max_members) || default_team_max_members < 1 || default_team_max_members > 100) {
+            showToast('默认总席位必须在 1~100 之间', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/team-import', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ default_team_max_members })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || 'Team 导入配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // CliproxyAPI 推送配置表单
+    document.getElementById('cliproxyapiForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const base_url = document.getElementById('cliproxyapiBaseUrl').value.trim();
+        const api_key = document.getElementById('cliproxyapiApiKey').value.trim();
+
+        if (!base_url) {
+            showToast('请输入 CliproxyAPI 站点地址', 'error');
+            return;
+        }
+
+        if (!/^https?:\/\//i.test(base_url)) {
+            showToast('CliproxyAPI 地址必须以 http:// 或 https:// 开头', 'error');
+            return;
+        }
+
+        if (!api_key) {
+            showToast('请输入 CliproxyAPI 管理密钥', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/cliproxyapi', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ base_url, api_key })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                document.getElementById('cliproxyapiBaseUrl').value = data.base_url || base_url.replace(/\/+$/, '');
+                showToast(data.message || 'CliproxyAPI 配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // 系统配色表单
+    document.getElementById('uiThemeForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const theme = document.getElementById('uiThemeSelect').value;
+
+        try {
+            const response = await fetch('/admin/settings/ui-theme', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ theme })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || '系统配色已保存', 'success');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 300);
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Webhook 配置表单
+    document.getElementById('webhookForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const webhook_url = document.getElementById('webhookUrl').value.trim();
+        const low_stock_threshold = parseInt(document.getElementById('lowStockThreshold').value);
+        const api_key = document.getElementById('apiKey').value.trim();
+
+        if (isNaN(low_stock_threshold) || low_stock_threshold < 0) {
+            showToast('请输入有效的库存阈值', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/webhook', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ webhook_url, low_stock_threshold, api_key })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast('Webhook 配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+</script>
+{% endblock %}
