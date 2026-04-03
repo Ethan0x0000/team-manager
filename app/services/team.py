@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import pytz
 from sqlalchemy import select, update, delete, func, or_, case
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -471,15 +472,9 @@ class TeamService:
             return None
 
         current_time = seen_at or get_now()
-        stmt = select(TeamEmailMapping).where(
-            TeamEmailMapping.team_id == team_id,
-            TeamEmailMapping.email == normalized_email,
-        )
-        result = await db_session.execute(stmt)
-        mapping = result.scalar_one_or_none()
-
-        if not mapping:
-            mapping = TeamEmailMapping(
+        upsert_stmt = (
+            sqlite_insert(TeamEmailMapping)
+            .values(
                 team_id=team_id,
                 email=normalized_email,
                 status=status,
@@ -487,14 +482,25 @@ class TeamService:
                 last_seen_at=current_time,
                 missing_sync_count=0,
             )
-            db_session.add(mapping)
-            return mapping
+            .on_conflict_do_update(
+                index_elements=[TeamEmailMapping.team_id, TeamEmailMapping.email],
+                set_={
+                    "status": status,
+                    "source": source,
+                    "last_seen_at": current_time,
+                    "missing_sync_count": 0,
+                    "updated_at": current_time,
+                },
+            )
+        )
+        await db_session.execute(upsert_stmt)
 
-        mapping.status = status
-        mapping.source = source
-        mapping.last_seen_at = current_time
-        mapping.missing_sync_count = 0
-        return mapping
+        refreshed_stmt = select(TeamEmailMapping).where(
+            TeamEmailMapping.team_id == team_id,
+            TeamEmailMapping.email == normalized_email,
+        )
+        refreshed_result = await db_session.execute(refreshed_stmt)
+        return refreshed_result.scalar_one_or_none()
 
     async def mark_team_email_mapping_removed(
         self,

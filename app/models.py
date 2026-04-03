@@ -193,7 +193,45 @@ class RedemptionRecord(Base):
     )
 
     # 索引
-    __table_args__ = (Index("idx_email", "email"),)
+    __table_args__ = (
+        Index("idx_email", "email"),
+        Index(
+            "idx_redemption_record_unique_activation",
+            "code",
+            "team_id",
+            "email",
+            unique=True,
+        ),
+    )
+
+
+class RedemptionInviteMarker(Base):
+    """邀请成功标记表（用于跨请求幂等恢复）。"""
+
+    __tablename__ = "redemption_invite_markers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(32), nullable=False, comment="兑换码")
+    team_id = Column(
+        Integer,
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="Team ID",
+    )
+    email = Column(String(255), nullable=False, comment="用户邮箱（统一存小写）")
+    invite_confirmed_at = Column(DateTime, default=get_now, comment="邀请成功确认时间")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+
+    __table_args__ = (
+        Index(
+            "idx_redemption_invite_marker_unique",
+            "code",
+            "team_id",
+            "email",
+            unique=True,
+        ),
+        Index("idx_redemption_invite_marker_email", "email"),
+    )
 
 
 class AnomalyRecord(Base):

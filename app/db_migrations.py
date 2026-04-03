@@ -34,6 +34,14 @@ def table_exists(cursor, table_name):
     return cursor.fetchone() is not None
 
 
+def index_exists(cursor, index_name):
+    """检查索引是否存在。"""
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (index_name,)
+    )
+    return cursor.fetchone() is not None
+
+
 def run_auto_migration():
     """
     自动运行数据库迁移
@@ -219,6 +227,58 @@ def run_auto_migration():
                 ON anomaly_records (deleted_at)
             """)
             migrations_applied.append("anomaly_records table")
+
+        # 统一历史兑换记录邮箱格式，减少重复判定歧义
+        if table_exists(cursor, "redemption_records"):
+            cursor.execute("""
+                UPDATE redemption_records
+                SET email = lower(trim(email))
+                WHERE email IS NOT NULL
+            """)
+
+            # 建立唯一索引前先按(code, team_id, email)去重，保留最早记录
+            cursor.execute("""
+                DELETE FROM redemption_records
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM redemption_records
+                    GROUP BY code, team_id, email
+                )
+            """)
+
+            if not index_exists(cursor, "idx_redemption_record_unique_activation"):
+                logger.info(
+                    "创建 redemption_records 唯一索引 idx_redemption_record_unique_activation"
+                )
+                cursor.execute("""
+                    CREATE UNIQUE INDEX idx_redemption_record_unique_activation
+                    ON redemption_records (code, team_id, email)
+                """)
+                migrations_applied.append("idx_redemption_record_unique_activation")
+
+        if not table_exists(cursor, "redemption_invite_markers"):
+            logger.info("创建 redemption_invite_markers 表")
+            cursor.execute("""
+                CREATE TABLE redemption_invite_markers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code VARCHAR(32) NOT NULL,
+                    team_id INTEGER NOT NULL,
+                    email VARCHAR(255) NOT NULL,
+                    invite_confirmed_at DATETIME,
+                    created_at DATETIME,
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+            """)
+            migrations_applied.append("redemption_invite_markers")
+
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_redemption_invite_marker_unique
+            ON redemption_invite_markers (code, team_id, email)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_redemption_invite_marker_email
+            ON redemption_invite_markers (email)
+        """)
 
         # 提交更改
         conn.commit()

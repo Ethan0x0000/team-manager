@@ -10,10 +10,17 @@ from collections import defaultdict
 from typing import Optional, Dict, Any, List, Set
 from datetime import datetime, timedelta
 from sqlalchemy import select, update, delete, func, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal
 
-from app.models import RedemptionCode, RedemptionRecord, Team, Setting
+from app.models import (
+    RedemptionCode,
+    RedemptionRecord,
+    RedemptionInviteMarker,
+    Team,
+    Setting,
+)
 from app.services.redemption import RedemptionService
 from app.services.team import TeamService
 from app.services.warranty import warranty_service
@@ -49,6 +56,186 @@ class RedeemFlowService:
         self.warranty_service = warranty_service
         self.team_service = TeamService()
         self.chatgpt_service = chatgpt_service
+
+    @staticmethod
+    def _build_success_result(team_id: int, team: Team) -> Dict[str, Any]:
+        """构建兑换成功返回体。"""
+        return {
+            "success": True,
+            "message": "兑换成功！邀请链接已发送至您的邮箱，请及时查收。",
+            "team_info": {
+                "id": team_id,
+                "team_name": team.team_name,
+                "email": team.email,
+                "expires_at": team.expires_at.isoformat() if team.expires_at else None,
+            },
+        }
+
+    @staticmethod
+    def _normalize_redeem_email(email: str) -> str:
+        """统一兑换链路中的邮箱格式，避免大小写导致的幂等失效。"""
+        return str(email or "").strip().lower()
+
+    async def _mark_invite_confirmed(
+        self,
+        *,
+        db_session: AsyncSession,
+        code: str,
+        email: str,
+        team_id: int,
+    ) -> None:
+        """写入邀请成功标记（跨请求恢复使用）。"""
+        marker_stmt = (
+            sqlite_insert(RedemptionInviteMarker)
+            .values(
+                code=code,
+                email=email,
+                team_id=team_id,
+                invite_confirmed_at=get_now(),
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    RedemptionInviteMarker.code,
+                    RedemptionInviteMarker.team_id,
+                    RedemptionInviteMarker.email,
+                ]
+            )
+        )
+        await db_session.execute(marker_stmt)
+
+    async def _has_invite_confirmed_marker(
+        self,
+        *,
+        db_session: AsyncSession,
+        code: str,
+        email: str,
+        team_id: int,
+    ) -> bool:
+        """检查是否存在邀请成功标记。"""
+        marker_stmt = select(RedemptionInviteMarker.id).where(
+            RedemptionInviteMarker.code == code,
+            RedemptionInviteMarker.email == email,
+            RedemptionInviteMarker.team_id == team_id,
+        )
+        marker_res = await db_session.execute(marker_stmt)
+        return marker_res.scalar_one_or_none() is not None
+
+    async def _persist_success_state(
+        self,
+        *,
+        db_session: AsyncSession,
+        code: str,
+        email: str,
+        team_id: int,
+        target_team: Team,
+        rc: Optional[RedemptionCode],
+        is_virtual_welfare_code: bool,
+        mapping_status: str,
+        mapping_source: str,
+    ) -> None:
+        """
+        持久化兑换成功后的业务状态。
+        幂等保障：同一邮箱/兑换码/Team 组合只写入一条使用记录，避免重试重复入库。
+        """
+
+        if rc and (not rc.reusable_by_seat):
+            warranty_expiration_mode = None
+            if rc.has_warranty:
+                warranty_expiration_mode = (
+                    await settings_service.get_warranty_expiration_mode(db_session)
+                )
+
+            previous_used_at = rc.used_at
+            current_use_time = get_now()
+            rc.status = "used"
+            rc.used_by_email = email
+            rc.used_team_id = team_id
+            should_refresh_warranty_window = bool(
+                rc.has_warranty
+                and (
+                    previous_used_at is None
+                    or warranty_expiration_mode
+                    == WARRANTY_EXPIRATION_MODE_REFRESH_ON_REDEEM
+                )
+            )
+
+            if (not rc.has_warranty) or should_refresh_warranty_window:
+                rc.used_at = current_use_time
+            if rc.has_warranty:
+                days = rc.warranty_days or 30
+                if should_refresh_warranty_window:
+                    rc.warranty_expires_at = current_use_time + timedelta(days=days)
+                elif not rc.warranty_expires_at:
+                    base_time = previous_used_at or current_use_time
+                    first_use_result = await db_session.execute(
+                        select(func.min(RedemptionRecord.redeemed_at)).where(
+                            RedemptionRecord.code == code
+                        )
+                    )
+                    first_use_time = first_use_result.scalar()
+                    if first_use_time:
+                        base_time = first_use_time
+                    rc.warranty_expires_at = base_time + timedelta(days=days)
+
+        if is_virtual_welfare_code:
+            setting_res = await db_session.execute(
+                select(Setting)
+                .where(Setting.key == "welfare_common_code_used_count")
+                .with_for_update()
+            )
+            used_setting = setting_res.scalar_one_or_none()
+
+            if used_setting:
+                try:
+                    current_used = int((used_setting.value or "0").strip() or 0)
+                except Exception:
+                    current_used = 0
+                used_setting.value = str(current_used + 1)
+            else:
+                used_setting = Setting(
+                    key="welfare_common_code_used_count",
+                    value="1",
+                    description="利通用兑换码已使用次数",
+                )
+                db_session.add(used_setting)
+
+            # 同步更新缓存，避免下一次校验读取到旧值
+            settings_service._cache["welfare_common_code_used_count"] = (
+                used_setting.value
+            )
+
+            await self.redemption_service.ensure_virtual_welfare_shadow_code(
+                db_session, code
+            )
+
+        record_stmt = (
+            sqlite_insert(RedemptionRecord)
+            .values(
+                email=email,
+                code=code,
+                team_id=team_id,
+                account_id=target_team.account_id,
+                is_warranty_redemption=bool(
+                    rc and rc.has_warranty and (not rc.reusable_by_seat)
+                ),
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    RedemptionRecord.code,
+                    RedemptionRecord.team_id,
+                    RedemptionRecord.email,
+                ]
+            )
+        )
+        await db_session.execute(record_stmt)
+
+        await self.team_service.upsert_team_email_mapping(
+            team_id,
+            email,
+            status=mapping_status,
+            db_session=db_session,
+            source=mapping_source,
+        )
 
     async def verify_code_and_get_teams(
         self, code: str, db_session: AsyncSession
@@ -202,13 +389,17 @@ class RedeemFlowService:
         success_result = None
         team_id_final = None
         selected_team_locked = team_id is not None
+        normalized_email = self._normalize_redeem_email(email)
+        if not normalized_email:
+            return {"success": False, "error": "邮箱不能为空"}
         excluded_team_ids: Set[int] = set()
+        invite_confirmed_team_ids: Set[int] = set()
 
         # 针对 code 加锁，防止同一个码并发进入兑换
         async with _code_locks[code]:
             for attempt in range(max_retries):
                 logger.info(
-                    f"兑换尝试 {attempt + 1}/{max_retries} (Code: {code}, Email: {email})"
+                    f"兑换尝试 {attempt + 1}/{max_retries} (Code: {code}, Email: {normalized_email})"
                 )
                 seat_reserved = False
 
@@ -233,12 +424,87 @@ class RedeemFlowService:
                     )
 
                     if selected_team_locked:
+                        locked_team_id = int(team_id) if team_id is not None else 0
                         existing_team_ids = set(
                             await self.team_service.get_active_team_ids_for_email(
-                                email, db_session, pool_type=pool_type
+                                normalized_email,
+                                db_session,
+                                pool_type=pool_type,
                             )
                         )
-                        if team_id in existing_team_ids:
+                        if locked_team_id in existing_team_ids:
+                            marker_exists = await self._has_invite_confirmed_marker(
+                                db_session=db_session,
+                                code=code,
+                                email=normalized_email,
+                                team_id=locked_team_id,
+                            )
+                            if marker_exists:
+                                logger.warning(
+                                    "检测到跨请求邀请成功标记，执行幂等恢复: email=%s, code=%s, team_id=%s",
+                                    normalized_email,
+                                    code,
+                                    locked_team_id,
+                                )
+
+                                if db_session.in_transaction():
+                                    await db_session.rollback()
+                                if not db_session.in_transaction():
+                                    await db_session.begin()
+
+                                try:
+                                    rc = None
+                                    if not is_virtual_welfare_code:
+                                        recover_code_res = await db_session.execute(
+                                            select(RedemptionCode)
+                                            .where(RedemptionCode.code == code)
+                                            .with_for_update()
+                                        )
+                                        rc = recover_code_res.scalar_one_or_none()
+                                        if not rc:
+                                            await db_session.rollback()
+                                            return {
+                                                "success": False,
+                                                "error": "兑换码不存在",
+                                            }
+
+                                    recover_team_res = await db_session.execute(
+                                        select(Team)
+                                        .where(
+                                            Team.id == locked_team_id,
+                                            Team.pool_type == pool_type,
+                                        )
+                                        .with_for_update()
+                                    )
+                                    recover_team = recover_team_res.scalar_one_or_none()
+                                    if not recover_team:
+                                        await db_session.rollback()
+                                        return {
+                                            "success": False,
+                                            "error": "目标 Team 不可用",
+                                        }
+
+                                    await self._persist_success_state(
+                                        db_session=db_session,
+                                        code=code,
+                                        email=normalized_email,
+                                        team_id=locked_team_id,
+                                        target_team=recover_team,
+                                        rc=rc,
+                                        is_virtual_welfare_code=is_virtual_welfare_code,
+                                        mapping_status="joined",
+                                        mapping_source="api_recovery",
+                                    )
+                                    await db_session.commit()
+                                    return self._build_success_result(
+                                        locked_team_id,
+                                        recover_team,
+                                    )
+                                except Exception as recovery_error:
+                                    if db_session.in_transaction():
+                                        await db_session.rollback()
+                                    raise recovery_error
+
                             return {
                                 "success": False,
                                 "error": (
@@ -252,7 +518,7 @@ class RedeemFlowService:
                     if not team_id_final:
                         select_res = await self.select_team_auto(
                             db_session,
-                            email=email,
+                            email=normalized_email,
                             exclude_team_ids=sorted(excluded_team_ids)
                             if excluded_team_ids
                             else None,
@@ -299,7 +565,9 @@ class RedeemFlowService:
                                     if rc.status not in ["unused", "warranty_active"]:
                                         if rc.status == "used":
                                             warranty_check = await self.warranty_service.validate_warranty_reuse(
-                                                db_session, code, email
+                                                db_session,
+                                                code,
+                                                normalized_email,
                                             )
                                             if not warranty_check.get("can_reuse"):
                                                 await db_session.rollback()
@@ -355,10 +623,45 @@ class RedeemFlowService:
                         invite_res = await self.chatgpt_service.send_invite(
                             access_token,
                             account_id_to_use,
-                            email,
+                            normalized_email,
                             db_session,
                             identifier=team_email_to_use,
                         )
+
+                        invite_data = (
+                            invite_res.get("data", {})
+                            if invite_res.get("success")
+                            else {}
+                        )
+                        invite_data_empty = (
+                            "account_invites" in invite_data
+                            and not invite_data.get("account_invites")
+                        )
+
+                        if invite_res.get("success") and not invite_data_empty:
+                            try:
+                                if db_session.in_transaction():
+                                    await db_session.rollback()
+                                await db_session.begin()
+                                await self._mark_invite_confirmed(
+                                    db_session=db_session,
+                                    code=code,
+                                    email=normalized_email,
+                                    team_id=team_id_final,
+                                )
+                                await db_session.commit()
+                                invite_confirmed_team_ids.add(team_id_final)
+                            except Exception as marker_error:
+                                if db_session.in_transaction():
+                                    await db_session.rollback()
+                                logger.warning(
+                                    "写入邀请成功标记失败，回退到请求内恢复: email=%s, code=%s, team_id=%s, err=%s",
+                                    normalized_email,
+                                    code,
+                                    team_id_final,
+                                    marker_error,
+                                )
+                                invite_confirmed_team_ids.add(team_id_final)
 
                         # 4. 后置处理与状态持久化 (第二次短事务)
                         if not db_session.in_transaction():
@@ -391,8 +694,68 @@ class RedeemFlowService:
                                 if any(
                                     kw in err_str for kw in ALREADY_IN_TEAM_KEYWORDS
                                 ):
+                                    marker_exists = (
+                                        team_id_final in invite_confirmed_team_ids
+                                    )
+                                    if not marker_exists:
+                                        marker_exists = (
+                                            await self._has_invite_confirmed_marker(
+                                                db_session=db_session,
+                                                code=code,
+                                                email=normalized_email,
+                                                team_id=team_id_final,
+                                            )
+                                        )
+
+                                    if marker_exists:
+                                        logger.warning(
+                                            "检测到邀请已成功但后置持久化失败，触发幂等补写: email=%s, code=%s, team_id=%s",
+                                            normalized_email,
+                                            code,
+                                            team_id_final,
+                                        )
+
+                                        if (
+                                            seat_reserved
+                                            and target_team.current_members > 0
+                                        ):
+                                            target_team.current_members -= 1
+
+                                        if (
+                                            target_team.current_members
+                                            >= target_team.max_members
+                                        ):
+                                            target_team.status = "full"
+                                        elif (
+                                            target_team.expires_at
+                                            and target_team.expires_at < get_now()
+                                        ):
+                                            target_team.status = "expired"
+                                        else:
+                                            target_team.status = "active"
+
+                                        await self._persist_success_state(
+                                            db_session=db_session,
+                                            code=code,
+                                            email=normalized_email,
+                                            team_id=team_id_final,
+                                            target_team=target_team,
+                                            rc=rc,
+                                            is_virtual_welfare_code=is_virtual_welfare_code,
+                                            mapping_status="joined",
+                                            mapping_source="api_recovery",
+                                        )
+                                        seat_reserved = False
+                                        await db_session.commit()
+
+                                        success_result = self._build_success_result(
+                                            team_id_final, target_team
+                                        )
+                                        core_success = True
+                                        break
+
                                     logger.info(
-                                        f"用户 {email} 已经在 Team {team_id_final} 中，本次兑不消耗兑换码"
+                                        f"用户 {normalized_email} 已经在 Team {team_id_final} 中，本次兑不消耗兑换码"
                                     )
 
                                     if (
@@ -417,7 +780,7 @@ class RedeemFlowService:
 
                                     await self.team_service.upsert_team_email_mapping(
                                         team_id_final,
-                                        email,
+                                        normalized_email,
                                         status="joined",
                                         db_session=db_session,
                                         source="api",
@@ -491,10 +854,7 @@ class RedeemFlowService:
                                     await db_session.commit()
                                     raise Exception(err)
 
-                            invite_data = invite_res.get("data", {})
-                            if "account_invites" in invite_data and not invite_data.get(
-                                "account_invites"
-                            ):
+                            if invite_data_empty:
                                 if seat_reserved and target_team.current_members > 0:
                                     target_team.current_members -= 1
                                     seat_reserved = False
@@ -516,108 +876,16 @@ class RedeemFlowService:
                                 )
 
                             # 成功逻辑
-                            if rc and (not rc.reusable_by_seat):
-                                warranty_expiration_mode = None
-                                if rc.has_warranty:
-                                    warranty_expiration_mode = await settings_service.get_warranty_expiration_mode(
-                                        db_session
-                                    )
-
-                                previous_used_at = rc.used_at
-                                current_use_time = get_now()
-                                rc.status = "used"
-                                rc.used_by_email = email
-                                rc.used_team_id = team_id_final
-                                should_refresh_warranty_window = bool(
-                                    rc.has_warranty
-                                    and (
-                                        previous_used_at is None
-                                        or warranty_expiration_mode
-                                        == WARRANTY_EXPIRATION_MODE_REFRESH_ON_REDEEM
-                                    )
-                                )
-
-                                if (
-                                    not rc.has_warranty
-                                ) or should_refresh_warranty_window:
-                                    rc.used_at = current_use_time
-                                if rc.has_warranty:
-                                    days = rc.warranty_days or 30
-                                    if should_refresh_warranty_window:
-                                        rc.warranty_expires_at = (
-                                            current_use_time + timedelta(days=days)
-                                        )
-                                    elif not rc.warranty_expires_at:
-                                        base_time = previous_used_at or current_use_time
-                                        first_use_result = await db_session.execute(
-                                            select(
-                                                func.min(RedemptionRecord.redeemed_at)
-                                            ).where(RedemptionRecord.code == code)
-                                        )
-                                        first_use_time = first_use_result.scalar()
-                                        if first_use_time:
-                                            base_time = first_use_time
-                                        rc.warranty_expires_at = base_time + timedelta(
-                                            days=days
-                                        )
-
-                            if is_virtual_welfare_code:
-                                setting_res = await db_session.execute(
-                                    select(Setting)
-                                    .where(
-                                        Setting.key == "welfare_common_code_used_count"
-                                    )
-                                    .with_for_update()
-                                )
-                                used_setting = setting_res.scalar_one_or_none()
-
-                                if used_setting:
-                                    try:
-                                        current_used = int(
-                                            (used_setting.value or "0").strip() or 0
-                                        )
-                                    except Exception:
-                                        current_used = 0
-                                    used_setting.value = str(current_used + 1)
-                                else:
-                                    used_setting = Setting(
-                                        key="welfare_common_code_used_count",
-                                        value="1",
-                                        description="利通用兑换码已使用次数",
-                                    )
-                                    db_session.add(used_setting)
-
-                                # 同步更新缓存，避免下一次校验读取到旧值
-                                settings_service._cache[
-                                    "welfare_common_code_used_count"
-                                ] = used_setting.value
-
-                            if is_virtual_welfare_code:
-                                await self.redemption_service.ensure_virtual_welfare_shadow_code(
-                                    db_session, code
-                                )
-
-                            record = RedemptionRecord(
-                                email=email,
-                                code=code,
-                                team_id=team_id_final,
-                                account_id=target_team.account_id,
-                                is_warranty_redemption=(
-                                    bool(
-                                        rc
-                                        and rc.has_warranty
-                                        and (not rc.reusable_by_seat)
-                                    )
-                                ),
-                            )
-                            db_session.add(record)
-
-                            await self.team_service.upsert_team_email_mapping(
-                                team_id_final,
-                                email,
-                                status="invited",
+                            await self._persist_success_state(
                                 db_session=db_session,
-                                source="redeem",
+                                code=code,
+                                email=normalized_email,
+                                team_id=team_id_final,
+                                target_team=target_team,
+                                rc=rc,
+                                is_virtual_welfare_code=is_virtual_welfare_code,
+                                mapping_status="invited",
+                                mapping_source="redeem",
                             )
 
                             seat_reserved = False
@@ -625,18 +893,9 @@ class RedeemFlowService:
                             await db_session.commit()
 
                             # 核心步骤成功，准备返回结果
-                            success_result = {
-                                "success": True,
-                                "message": "兑换成功！邀请链接已发送至您的邮箱，请及时查收。",
-                                "team_info": {
-                                    "id": team_id_final,
-                                    "team_name": target_team.team_name,
-                                    "email": target_team.email,
-                                    "expires_at": target_team.expires_at.isoformat()
-                                    if target_team.expires_at
-                                    else None,
-                                },
-                            }
+                            success_result = self._build_success_result(
+                                team_id_final, target_team
+                            )
                             core_success = True
                         except Exception as e:
                             if db_session.in_transaction():
@@ -713,7 +972,9 @@ class RedeemFlowService:
 
             if core_success:
                 # 后台异步验证任务 (循环检测 3 次，确保 API 数据同步) - 移至后台以极大提高并发并防止 HTTP 超时
-                asyncio.create_task(self._background_verify_sync(team_id_final, email))
+                asyncio.create_task(
+                    self._background_verify_sync(team_id_final, normalized_email)
+                )
 
                 # 补货通知任务 (异步)
                 asyncio.create_task(notification_service.check_and_notify_low_stock())
