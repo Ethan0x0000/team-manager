@@ -468,6 +468,61 @@ class RedemptionService:
 
         return len(remaining_records)
 
+    async def _can_withdraw_record_without_remote_cleanup(
+        self,
+        db_session: AsyncSession,
+        record: RedemptionRecord,
+        team_result: Dict[str, Any],
+    ) -> bool:
+        """判断 Team 侧失败时是否允许仅做本地撤回。"""
+        message = str(team_result.get("message") or "")
+        error = str(team_result.get("error") or "")
+        combined_text = f"{message} {error}".lower()
+
+        # 远端已确认目标成员不存在，可直接继续本地清理。
+        if "成员已不存在" in message or "用户不存在" in error:
+            return True
+
+        team = await db_session.get(Team, record.team_id)
+        if team is None:
+            logger.warning(
+                "撤回记录 %s 时 Team %s 不存在，按孤儿记录执行本地清理",
+                record.id,
+                record.team_id,
+            )
+            return True
+
+        unavailable_statuses = {"banned", "deleted", "expired", "error"}
+        team_status = (team.status or "").strip().lower()
+
+        if team.deleted_at is not None or team_status in unavailable_statuses:
+            logger.warning(
+                "撤回记录 %s 时 Team %s 当前状态=%s，允许跳过远端移除，仅执行本地清理",
+                record.id,
+                record.team_id,
+                team_status or "unknown",
+            )
+            return True
+
+        # 防御式兜底：若错误文本明确说明 Team 账号不可用，也允许本地清理。
+        unavailable_error_keywords = [
+            "account_deactivated",
+            "token_invalidated",
+            "账号已封禁",
+            "team 已删除",
+        ]
+        if any(keyword in combined_text for keyword in unavailable_error_keywords) and (
+            team_status not in {"active", "full"}
+        ):
+            logger.warning(
+                "撤回记录 %s 时检测到 Team 不可用错误(%s)，允许本地清理",
+                record.id,
+                combined_text,
+            )
+            return True
+
+        return False
+
     async def generate_code_single(
         self,
         db_session: AsyncSession,
@@ -1391,10 +1446,12 @@ class RedemptionService:
             )
 
             if not team_result["success"]:
-                # 即使 Team 移除失败，如果是因为成员已经不在了，我们也继续处理数据库
-                if "成员已不存在" not in str(
-                    team_result.get("message", "")
-                ) and "用户不存在" not in str(team_result.get("error", "")):
+                # Team 不可操作（封禁/删除/过期/异常）时，允许仅执行本地撤回，避免形成删除死锁。
+                if not await self._can_withdraw_record_without_remote_cleanup(
+                    db_session,
+                    record,
+                    team_result,
+                ):
                     return {
                         "success": False,
                         "error": f"从 Team 移除成员失败: {team_result.get('error') or team_result.get('message')}",

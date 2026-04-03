@@ -13,6 +13,8 @@ from app.models import (
     Team,
 )
 from app.services.redeem_flow import RedeemFlowService
+from app.services.redemption import RedemptionService
+from app.utils.time_utils import get_now
 
 
 class StubRedemptionService:
@@ -135,6 +137,51 @@ class RedeemFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
             session.add_all([team, code])
             await session.commit()
+
+    async def _seed_code_with_record(
+        self,
+        *,
+        team_id: int,
+        team_status: str,
+        code: str,
+        email: str,
+    ) -> Any:
+        async with self.session_factory() as session:
+            team = Team(
+                id=team_id,
+                email=f"owner-{team_id}@example.com",
+                access_token_encrypted=f"token-{team_id}",
+                account_id=f"acct-{team_id}",
+                team_name=f"Team {team_id}",
+                current_members=1,
+                max_members=6,
+                status=team_status,
+                pool_type="normal",
+            )
+            session.add(team)
+            await session.commit()
+
+            redeem_code = RedemptionCode(
+                code=code,
+                status="used",
+                pool_type="normal",
+                reusable_by_seat=False,
+                used_by_email=email,
+                used_team_id=team_id,
+                used_at=get_now(),
+            )
+            session.add(redeem_code)
+            await session.commit()
+
+            record = RedemptionRecord(
+                email=email,
+                code=code,
+                team_id=team_id,
+                account_id=f"acct-{team_id}",
+            )
+            session.add(record)
+            await session.commit()
+            return record.id
 
     @staticmethod
     def _invite_success_payload(email: str = "user@example.com"):
@@ -371,3 +418,77 @@ class RedeemFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             assert refreshed_code is not None
             self.assertEqual(refreshed_code.status, "used")
             self.assertEqual(refreshed_code.used_team_id, 1)
+
+    async def test_withdraw_record_allows_local_cleanup_when_team_banned(self):
+        record_id = await self._seed_code_with_record(
+            team_id=2,
+            team_status="banned",
+            code="LOCK-CODE-0001",
+            email="buyer@example.com",
+        )
+
+        service = RedemptionService()
+
+        async with self.session_factory() as session:
+            with patch(
+                "app.services.team.team_service.remove_invite_or_member",
+                new=AsyncMock(
+                    return_value={
+                        "success": False,
+                        "message": None,
+                        "error": "账号已封禁 (account_deactivated)",
+                    }
+                ),
+            ):
+                withdraw_result = await service.withdraw_record(record_id, session)
+
+            self.assertTrue(withdraw_result["success"])
+
+            removed_record = await session.get(RedemptionRecord, record_id)
+            self.assertIsNone(removed_record)
+
+            code_result = await session.execute(
+                select(RedemptionCode).where(RedemptionCode.code == "LOCK-CODE-0001")
+            )
+            refreshed_code = code_result.scalar_one_or_none()
+            self.assertIsNotNone(refreshed_code)
+            assert refreshed_code is not None
+            self.assertEqual(refreshed_code.status, "unused")
+            self.assertIsNone(refreshed_code.used_by_email)
+            self.assertIsNone(refreshed_code.used_team_id)
+
+            delete_result = await service.delete_code("LOCK-CODE-0001", session)
+            self.assertTrue(delete_result["success"])
+
+    async def test_withdraw_record_still_blocks_on_active_team_remote_error(self):
+        record_id = await self._seed_code_with_record(
+            team_id=3,
+            team_status="active",
+            code="LOCK-CODE-0002",
+            email="buyer@example.com",
+        )
+
+        service = RedemptionService()
+
+        async with self.session_factory() as session:
+            with patch(
+                "app.services.team.team_service.remove_invite_or_member",
+                new=AsyncMock(
+                    return_value={
+                        "success": False,
+                        "message": None,
+                        "error": "temporary upstream failure",
+                    }
+                ),
+            ):
+                withdraw_result = await service.withdraw_record(record_id, session)
+
+            self.assertFalse(withdraw_result["success"])
+            self.assertIn("从 Team 移除成员失败", withdraw_result["error"])
+
+            existing_record = await session.get(RedemptionRecord, record_id)
+            self.assertIsNotNone(existing_record)
+
+            delete_result = await service.delete_code("LOCK-CODE-0002", session)
+            self.assertFalse(delete_result["success"])
+            self.assertIn("无法直接删除", delete_result["error"])
