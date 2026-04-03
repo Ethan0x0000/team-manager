@@ -192,6 +192,34 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE teams ADD COLUMN deleted_at DATETIME")
             migrations_applied.append("teams.deleted_at")
 
+        # 检查并创建 anomaly_records 表
+        if not table_exists(cursor, "anomaly_records"):
+            logger.info("创建 anomaly_records 异常检测删除记录表")
+            cursor.execute("""
+                CREATE TABLE anomaly_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email VARCHAR(255) NOT NULL,
+                    team_id INTEGER NOT NULL,
+                    team_name VARCHAR(255),
+                    joined_at DATETIME,
+                    deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    reason VARCHAR(255) DEFAULT 'no_redemption_code'
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_anomaly_email
+                ON anomaly_records (email)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_anomaly_team_id
+                ON anomaly_records (team_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_anomaly_deleted_at
+                ON anomaly_records (deleted_at)
+            """)
+            migrations_applied.append("anomaly_records table")
+
         # 提交更改
         conn.commit()
 

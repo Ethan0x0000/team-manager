@@ -1652,3 +1652,176 @@ async function generateWelfareCode() {
         if (btn) btn.disabled = false;
     }
 }
+
+// ==========================================
+// 异常检测 (Anomaly Detection)
+// ==========================================
+
+let anomalyDetectedItems = [];
+
+async function startAnomalyDetection() {
+    anomalyDetectedItems = [];
+    const modal = document.getElementById('anomalyDetectModal');
+    if (!modal) return;
+
+    // Reset all phases
+    const phaseScanning = document.getElementById('anomalyPhaseScanning');
+    const phaseResults = document.getElementById('anomalyPhaseResults');
+    const phaseCleaning = document.getElementById('anomalyPhaseCleaning');
+
+    if (phaseScanning) phaseScanning.style.display = 'block';
+    if (phaseResults) phaseResults.style.display = 'none';
+    if (phaseCleaning) phaseCleaning.style.display = 'none';
+
+    document.getElementById('anomalyScanPercent').textContent = '0%';
+    document.getElementById('anomalyScanBar').style.width = '0%';
+    document.getElementById('anomalyScanText').textContent = '准备中...';
+
+    showModal('anomalyDetectModal');
+
+    try {
+        const response = await fetch('/admin/anomaly/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+
+                try {
+                    const data = JSON.parse(trimmed);
+
+                    if (data.type === 'start') {
+                        document.getElementById('anomalyScanText').textContent =
+                            `共 ${data.total_teams} 个 Team 待扫描`;
+                    } else if (data.type === 'team_progress') {
+                        const pct = Math.round((data.current / data.total) * 100);
+                        document.getElementById('anomalyScanPercent').textContent = pct + '%';
+                        document.getElementById('anomalyScanBar').style.width = pct + '%';
+                        document.getElementById('anomalyScanText').textContent =
+                            `正在扫描 ${data.current}/${data.total}: ${data.team_email || 'Team ' + data.team_id} (${data.members_found} 个成员)`;
+                    } else if (data.type === 'team_error') {
+                        const pct = Math.round((data.current / data.total) * 100);
+                        document.getElementById('anomalyScanPercent').textContent = pct + '%';
+                        document.getElementById('anomalyScanBar').style.width = pct + '%';
+                    } else if (data.type === 'check_progress') {
+                        document.getElementById('anomalyScanText').textContent = data.message;
+                    } else if (data.type === 'finish') {
+                        // Scanning done — show results
+                        if (phaseScanning) phaseScanning.style.display = 'none';
+                        if (phaseResults) phaseResults.style.display = 'block';
+
+                        const anomalies = data.anomalies || [];
+                        anomalyDetectedItems = anomalies;
+
+                        if (anomalies.length === 0) {
+                            document.getElementById('anomalyNoResult').style.display = 'block';
+                            document.getElementById('anomalyHasResult').style.display = 'none';
+                        } else {
+                            document.getElementById('anomalyNoResult').style.display = 'none';
+                            document.getElementById('anomalyHasResult').style.display = 'block';
+                            document.getElementById('anomalyCount').textContent = anomalies.length;
+
+                            const tbody = document.getElementById('anomalyResultsTableBody');
+                            tbody.innerHTML = anomalies.map(a => `
+                                <tr>
+                                    <td>${escapeHtml(a.email)}</td>
+                                    <td><span class="badge badge-secondary">${a.team_id}</span></td>
+                                    <td>${escapeHtml(a.team_name || '-')}</td>
+                                    <td>${a.joined_at ? formatDateTime(a.joined_at) : '-'}</td>
+                                </tr>
+                            `).join('');
+                        }
+
+                        if (window.lucide) lucide.createIcons();
+                    }
+                } catch (e) { /* skip malformed lines */ }
+            }
+        }
+    } catch (error) {
+        showToast('异常检测失败: ' + (error.message || '网络错误'), 'error');
+        hideModal('anomalyDetectModal');
+    }
+}
+
+async function startAnomalyClean() {
+    if (anomalyDetectedItems.length === 0) return;
+
+    if (!confirm(`确定要清除 ${anomalyDetectedItems.length} 个异常成员吗？\n\n此操作不可恢复！`)) {
+        return;
+    }
+
+    // Switch to cleaning phase
+    const phaseResults = document.getElementById('anomalyPhaseResults');
+    const phaseCleaning = document.getElementById('anomalyPhaseCleaning');
+
+    if (phaseResults) phaseResults.style.display = 'none';
+    if (phaseCleaning) phaseCleaning.style.display = 'block';
+    document.getElementById('anomalyCleanPercent').textContent = '0%';
+    document.getElementById('anomalyCleanBar').style.width = '0%';
+    document.getElementById('anomalyCleanText').textContent = '准备中...';
+
+    try {
+        const response = await fetch('/admin/anomaly/clean', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: anomalyDetectedItems })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+
+                try {
+                    const data = JSON.parse(trimmed);
+
+                    if (data.type === 'progress') {
+                        const pct = Math.round((data.current / data.total) * 100);
+                        document.getElementById('anomalyCleanPercent').textContent = pct + '%';
+                        document.getElementById('anomalyCleanBar').style.width = pct + '%';
+                        document.getElementById('anomalyCleanText').textContent =
+                            `正在删除 ${data.current}/${data.total}: ${data.email}` + (data.success ? ' ✓' : ' ✗');
+                    } else if (data.type === 'finish') {
+                        showToast(
+                            `清除完成: 成功 ${data.success_count}, 失败 ${data.failed_count}`,
+                            data.failed_count > 0 ? 'warning' : 'success'
+                        );
+                        setTimeout(() => location.reload(), 1200);
+                    }
+                } catch (e) { /* skip */ }
+            }
+        }
+    } catch (error) {
+        showToast('清除失败: ' + (error.message || '网络错误'), 'error');
+    }
+}
+
+function closeAnomalyModal() {
+    hideModal('anomalyDetectModal');
+    anomalyDetectedItems = [];
+}

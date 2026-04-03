@@ -1,5 +1,6 @@
-# 使用轻量级的 Python 基础镜像
-FROM python:3.10-slim
+# 使用可配置的 Python 基础镜像（默认走可访问镜像源）
+ARG PYTHON_BASE_IMAGE=m.daocloud.io/docker.io/library/python:3.10-slim
+FROM ${PYTHON_BASE_IMAGE}
 
 # 设置工作目录
 WORKDIR /app

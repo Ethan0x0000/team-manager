@@ -9,6 +9,8 @@
 git clone https://github.com/loLollipop/team-manage-refresh.git
 cd team-manage-refresh
 cp .env.example .env
+# 如 Docker Hub 拉取超时，可在 .env 中覆盖基础镜像源（项目默认已配置可访问镜像）
+# PYTHON_BASE_IMAGE=m.daocloud.io/docker.io/library/python:3.10-slim
 docker compose up -d
 ```
 
@@ -220,6 +222,12 @@ python -m app.main
 ```bash
 # 构建并启动容器
 docker compose up -d
+```
+
+如遇 `python:3.10-slim` 拉取失败，可在 `.env` 中设置：
+
+```env
+PYTHON_BASE_IMAGE=m.daocloud.io/docker.io/library/python:3.10-slim
 ```
 
 ### 3. 数据持久化

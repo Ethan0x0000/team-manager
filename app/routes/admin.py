@@ -17,6 +17,7 @@ from app.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import require_admin
 from app.services.team import TeamService
 from app.services.redemption import RedemptionService
+from app.services.anomaly import AnomalyService
 from app.services.chatgpt import chatgpt_service
 from app.services.settings import (
     settings_service,
@@ -35,6 +36,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # 服务实例
 team_service = TeamService()
 redemption_service = RedemptionService()
+anomaly_service = AnomalyService()
 
 
 async def resolve_ui_theme(db: AsyncSession) -> str:
@@ -150,6 +152,12 @@ class BulkActionRequest(BaseModel):
     """批量操作请求"""
 
     ids: List[int] = Field(..., description="Team ID 列表")
+
+
+class AnomalyCleanRequest(BaseModel):
+    """异常成员清理请求"""
+
+    items: List[dict] = Field(..., description="待清理异常成员列表")
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -2554,4 +2562,206 @@ async def update_cliproxyapi_settings(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": f"更新失败: {str(e)}"},
+        )
+
+
+@router.post("/anomaly/detect")
+async def detect_anomalies_stream(current_user: dict = Depends(require_admin)):
+    """检测异常成员并流式返回进度。"""
+    try:
+
+        async def progress_generator():
+            async with AsyncSessionLocal() as db_session:
+                async for progress in anomaly_service.detect_anomalies(
+                    db_session, team_service
+                ):
+                    yield json.dumps(progress, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            progress_generator(), media_type="application/x-ndjson"
+        )
+    except Exception:
+        logger.exception("检测异常成员失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "检测异常成员失败，请稍后重试"},
+        )
+
+
+@router.post("/anomaly/clean")
+async def clean_anomalies_stream(
+    clean_data: AnomalyCleanRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """清理异常成员并流式返回进度。"""
+    try:
+
+        async def progress_generator():
+            async with AsyncSessionLocal() as db_session:
+                async for progress in anomaly_service.clean_anomalies(
+                    clean_data.items, db_session, team_service
+                ):
+                    yield json.dumps(progress, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(
+            progress_generator(), media_type="application/x-ndjson"
+        )
+    except Exception:
+        logger.exception("清理异常成员失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "清理异常成员失败，请稍后重试"},
+        )
+
+
+@router.get("/anomaly-records", response_class=HTMLResponse)
+async def anomaly_records_page(
+    request: Request,
+    email: Optional[str] = None,
+    team_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    page: Optional[str] = "1",
+    per_page: int = 20,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    """异常清理记录页面。"""
+    try:
+        from app.main import templates
+        from datetime import datetime, timedelta
+        import math
+
+        try:
+            actual_team_id = int(team_id) if team_id and team_id.strip() else None
+        except (ValueError, TypeError):
+            actual_team_id = None
+
+        try:
+            page_int = int(page) if page and page.strip() else 1
+        except (ValueError, TypeError):
+            page_int = 1
+
+        logger.info(
+            f"管理员访问异常清理记录页面 (page={page_int}, per_page={per_page})"
+        )
+
+        records_result = await anomaly_service.get_all_anomaly_records(
+            db, email=email, team_id=actual_team_id
+        )
+        all_records = records_result.get("records", [])
+
+        filtered_records = []
+        for record in all_records:
+            if start_date or end_date:
+                try:
+                    record_date = datetime.fromisoformat(
+                        str(record.get("deleted_at") or "")
+                    ).date()
+
+                    if start_date:
+                        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                        if record_date < start:
+                            continue
+
+                    if end_date:
+                        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                        if record_date > end:
+                            continue
+                except:
+                    pass
+
+            filtered_records.append(record)
+
+        now = get_now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        month_start = today_start.replace(day=1)
+
+        stats = {
+            "total": len(filtered_records),
+            "today": 0,
+            "this_week": 0,
+            "this_month": 0,
+        }
+
+        for record in filtered_records:
+            try:
+                record_time = datetime.fromisoformat(
+                    str(record.get("deleted_at") or "")
+                )
+                if record_time >= today_start:
+                    stats["today"] += 1
+                if record_time >= week_start:
+                    stats["this_week"] += 1
+                if record_time >= month_start:
+                    stats["this_month"] += 1
+            except:
+                pass
+
+        total_records = len(filtered_records)
+        total_pages = math.ceil(total_records / per_page) if total_records > 0 else 1
+
+        if page_int < 1:
+            page_int = 1
+        if page_int > total_pages:
+            page_int = total_pages
+
+        start_idx = (page_int - 1) * per_page
+        end_idx = start_idx + per_page
+        paginated_records = filtered_records[start_idx:end_idx]
+
+        for record in paginated_records:
+            try:
+                deleted_at_dt = datetime.fromisoformat(
+                    str(record.get("deleted_at") or "")
+                )
+                record["deleted_at"] = deleted_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+
+            try:
+                joined_at_raw = record.get("joined_at")
+                if joined_at_raw:
+                    joined_at_dt = datetime.fromisoformat(str(joined_at_raw))
+                    record["joined_at"] = joined_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+
+            # 映射 reason 为可读文本
+            reason_map = {
+                "no_redemption_code": "未绑定兑换码",
+            }
+            record["reason_display"] = reason_map.get(
+                record.get("reason", ""), record.get("reason", "未知")
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "admin/anomaly_records/index.html",
+            {
+                "user": current_user,
+                "active_page": "anomaly_records",
+                "ui_theme": await resolve_ui_theme(db),
+                "records": paginated_records,
+                "stats": stats,
+                "filters": {
+                    "email": email,
+                    "team_id": team_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+                "pagination": {
+                    "current_page": page_int,
+                    "total_pages": total_pages,
+                    "total": total_records,
+                    "per_page": per_page,
+                },
+            },
+        )
+    except Exception:
+        logger.exception("获取异常清理记录失败")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取异常清理记录失败，请稍后重试",
         )

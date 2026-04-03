@@ -76,6 +76,12 @@
                         <span class="menu-text">使用记录</span>
                     </a>
                 </li>
+                <li class="menu-item {% if active_page == 'anomaly_records' %}active{% endif %}">
+                    <a href="/admin/anomaly-records">
+                        <span class="menu-icon" data-lucide="shield-alert"></span>
+                        <span class="menu-text">异常记录</span>
+                    </a>
+                </li>
                 <li class="menu-item {% if active_page == 'welfare' %}active{% endif %}">
                     <a href="/admin/welfare">
                         <span class="menu-icon" data-lucide="heart-handshake"></span>

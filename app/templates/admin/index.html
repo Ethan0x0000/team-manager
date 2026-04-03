@@ -271,6 +271,55 @@
             margin-left: 0 !important;
         }
     }
+
+    .btn-anomaly-detect {
+        background: linear-gradient(135deg, #dc2626, #b91c1c);
+        color: #fff;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: var(--radius-md);
+        font-size: 0.875rem;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+    }
+    .btn-anomaly-detect:hover {
+        background: linear-gradient(135deg, #ef4444, #dc2626);
+        box-shadow: 0 2px 8px rgba(220, 38, 38, 0.35);
+    }
+    .anomaly-progress-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--text-main);
+        margin-bottom: 0.35rem;
+    }
+    .anomaly-progress-percent {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: var(--text-main);
+        margin-bottom: 1rem;
+    }
+    .anomaly-progress-bar {
+        width: 100%;
+        height: 12px;
+        border-radius: 999px;
+        background: var(--bg-muted);
+        overflow: hidden;
+        margin-bottom: 0.9rem;
+    }
+    .anomaly-progress-bar-inner {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #ef4444, #dc2626, #ef4444);
+        background-size: 200% 100%;
+        transition: width 0.28s ease;
+        animation: batch-progress-shimmer 1.4s linear infinite;
+    }
 </style>
 {% endblock %}
 
@@ -365,6 +414,11 @@
                 </button>
                 <span class="selected-count text-muted small" style="margin-left: 8px;">已选 0 项</span>
             </div>
+
+            <!-- 异常检测 -->
+            <button type="button" id="btnAnomalyDetect" class="btn btn-anomaly-detect" onclick="startAnomalyDetection()">
+                <i data-lucide="shield-alert" style="width: 16px; height: 16px;"></i> 异常检测
+            </button>
 
             <!-- 状态筛选 -->
             <div class="dropdown-wrapper">
@@ -746,6 +800,70 @@
         </div>
     </div>
 </div>
+
+<!-- 异常检测 模态框 -->
+<div id="anomalyDetectModal" class="modal-overlay">
+    <div class="modal" style="max-width: 680px;">
+        <div class="modal-header">
+            <h3>异常检测</h3>
+            <button class="modal-close" onclick="closeAnomalyModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <!-- Phase 1: Scanning -->
+            <div id="anomalyPhaseScanning" style="display: none; text-align: center; padding: 2rem 0;">
+                <div class="anomaly-progress-title">正在扫描 Team 成员...</div>
+                <div id="anomalyScanPercent" class="anomaly-progress-percent">0%</div>
+                <div class="anomaly-progress-bar">
+                    <div id="anomalyScanBar" class="anomaly-progress-bar-inner"></div>
+                </div>
+                <div id="anomalyScanText" class="anomaly-progress-text">准备中...</div>
+            </div>
+            
+            <!-- Phase 2: Results -->
+            <div id="anomalyPhaseResults" style="display: none;">
+                <div id="anomalyNoResult" style="display: none; text-align: center; padding: 2rem 0;">
+                    <i data-lucide="check-circle" style="width: 48px; height: 48px; color: var(--success); margin-bottom: 1rem;"></i>
+                    <p style="font-size: 1.1rem; color: var(--text-main);">无异常</p>
+                    <p style="color: var(--text-muted);">所有成员邮箱均已绑定兑换码</p>
+                </div>
+                <div id="anomalyHasResult" style="display: none;">
+                    <p style="margin-bottom: 1rem;">
+                        发现 <strong id="anomalyCount" style="color: var(--danger);">0</strong> 个异常成员（未绑定任何兑换码）：
+                    </p>
+                    <div class="table-container" style="max-height: 300px; overflow-y: auto; margin-bottom: 1rem;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>邮箱</th>
+                                    <th>Team ID</th>
+                                    <th>Team 名称</th>
+                                    <th>加入时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="anomalyResultsTableBody"></tbody>
+                        </table>
+                    </div>
+                    <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+                        <button type="button" class="btn btn-secondary" onclick="closeAnomalyModal()">取消</button>
+                        <button type="button" id="btnAnomalyClean" class="btn btn-danger" onclick="startAnomalyClean()">
+                            <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> 清除这些成员
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Phase 3: Cleaning -->
+            <div id="anomalyPhaseCleaning" style="display: none; text-align: center; padding: 2rem 0;">
+                <div class="anomaly-progress-title">正在清除异常成员...</div>
+                <div id="anomalyCleanPercent" class="anomaly-progress-percent">0%</div>
+                <div class="anomaly-progress-bar">
+                    <div id="anomalyCleanBar" class="anomaly-progress-bar-inner"></div>
+                </div>
+                <div id="anomalyCleanText" class="anomaly-progress-text">准备中...</div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -754,6 +872,11 @@
         const editTeamModal = document.getElementById('editTeamModal');
         if (editTeamModal && editTeamModal.parentElement !== document.body) {
             document.body.appendChild(editTeamModal);
+        }
+
+        const anomalyDetectModal = document.getElementById('anomalyDetectModal');
+        if (anomalyDetectModal && anomalyDetectModal.parentElement !== document.body) {
+            document.body.appendChild(anomalyDetectModal);
         }
 
         // Ensure floating dropdowns are mounted to body for fixed positioning

@@ -196,6 +196,31 @@ class RedemptionRecord(Base):
     __table_args__ = (Index("idx_email", "email"),)
 
 
+class AnomalyRecord(Base):
+    """异常检测删除记录表"""
+
+    __tablename__ = "anomaly_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, comment="被删除的成员邮箱")
+    team_id = Column(Integer, nullable=False, comment="所属 Team ID")
+    team_name = Column(String(255), comment="Team 名称")
+    joined_at = Column(DateTime, comment="成员入队时间")
+    deleted_at = Column(DateTime, default=get_now, comment="删除时间")
+    reason = Column(
+        String(255),
+        default="no_redemption_code",
+        comment="删除原因: no_redemption_code",
+    )
+
+    # 索引
+    __table_args__ = (
+        Index("idx_anomaly_email", "email"),
+        Index("idx_anomaly_team_id", "team_id"),
+        Index("idx_anomaly_deleted_at", "deleted_at"),
+    )
+
+
 class Setting(Base):
     """系统设置表"""
 
