@@ -32,6 +32,7 @@ ACTIVE_TEAM_EMAIL_STATUSES = (
     TEAM_EMAIL_STATUS_INVITED,
     TEAM_EMAIL_STATUS_JOINED,
 )
+NORMAL_TEAM_STATUSES = ("active", "full")
 
 
 class TeamService:
@@ -2900,7 +2901,11 @@ class TeamService:
 
             # 3. 如果有状态过滤,添加过滤条件
             if status:
-                stmt = stmt.where(Team.status == status)
+                normalized_status = str(status).strip().lower()
+                if normalized_status == "normal":
+                    stmt = stmt.where(Team.status.in_(NORMAL_TEAM_STATUSES))
+                elif normalized_status != "all":
+                    stmt = stmt.where(Team.status == normalized_status)
 
             if pool_type:
                 stmt = stmt.where(Team.pool_type == pool_type)

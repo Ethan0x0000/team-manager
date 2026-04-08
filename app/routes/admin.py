@@ -30,6 +30,8 @@ from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DASHBOARD_STATUS_FILTER = "normal"
+
 # 创建路由器
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -44,6 +46,19 @@ async def resolve_ui_theme(db: AsyncSession) -> str:
     return settings_service.normalize_ui_theme(
         await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)
     )
+
+
+def normalize_dashboard_status_filter(
+    status_filter: str | None, legacy_status: str | None
+) -> str:
+    """标准化控制台状态筛选值，默认回落到“正常”。"""
+    raw_value = status_filter if status_filter is not None else legacy_status
+    normalized = str(raw_value or "").strip().lower()
+
+    if not normalized:
+        return DEFAULT_DASHBOARD_STATUS_FILTER
+
+    return normalized
 
 
 # 请求模型
@@ -177,8 +192,7 @@ async def admin_dashboard(
     try:
         from app.main import templates
 
-        if status_filter is None and legacy_status is not None:
-            status_filter = legacy_status
+        status_filter = normalize_dashboard_status_filter(status_filter, legacy_status)
 
         logger.info(
             f"管理员访问控制台, search={search}, page={page}, per_page={per_page}, status_filter={status_filter}"
@@ -254,8 +268,7 @@ async def welfare_dashboard(
     try:
         from app.main import templates
 
-        if status_filter is None and legacy_status is not None:
-            status_filter = legacy_status
+        status_filter = normalize_dashboard_status_filter(status_filter, legacy_status)
 
         teams_result = await team_service.get_all_teams(
             db,

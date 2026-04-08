@@ -425,7 +425,9 @@
                 <button id="statusFilterToggleBtn" type="button" class="btn btn-secondary dropdown-toggle">
                     <i data-lucide="filter" style="width: 16px; height: 16px;"></i>
                     <span>
-                        {% if status_filter == 'active' %}可用
+                        {% if status_filter == 'normal' %}正常
+                        {% elif status_filter == 'all' %}所有状态
+                        {% elif status_filter == 'active' %}可用
                         {% elif status_filter == 'full' %}已满
                         {% elif status_filter == 'expired' %}已过期
                         {% elif status_filter == 'error' %}异常
@@ -436,8 +438,11 @@
                 </button>
                 <div id="statusFilterDropdown" class="dropdown-menu dropdown-menu-floating">
                     <div class="dropdown-header">选择状态</div>
-                    <div class="dropdown-item" onclick="filterByStatus('')">
+                    <div class="dropdown-item" onclick="filterByStatus('all')">
                         <span class="text-muted">所有状态</span>
+                    </div>
+                    <div class="dropdown-item" onclick="filterByStatus('normal')">
+                        <span class="status-badge status-normal">正常 (Normal)</span>
                     </div>
                     <div class="dropdown-item" onclick="filterByStatus('active')">
                         <span class="status-badge status-active">可用 (Active)</span>
@@ -624,8 +629,9 @@
 
     {% if pagination.total_pages > 1 %}
     {% set search_param = '&search=' + search|urlencode if search else '' %}
+    {% set status_filter_param = '&status_filter=' + status_filter|urlencode if status_filter else '' %}
     {% set per_page_param = '&per_page=' + pagination.per_page|string if pagination.per_page != 20 else '' %}
-    {% set base_query = search_param + per_page_param %}
+    {% set base_query = search_param + status_filter_param + per_page_param %}
 
     <div class="pagination-controls">
         <!-- 首页 -->
