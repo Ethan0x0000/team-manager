@@ -169,6 +169,12 @@ class BulkActionRequest(BaseModel):
     ids: List[int] = Field(..., description="Team ID 列表")
 
 
+class RecordReassignTeamRequest(BaseModel):
+    """修改兑换记录绑定 Team 请求"""
+
+    new_team_id: int = Field(..., description="新的 Team ID")
+
+
 class AnomalyCleanRequest(BaseModel):
     """异常成员清理请求"""
 
@@ -1902,6 +1908,49 @@ async def withdraw_record(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": "撤回失败，请稍后重试"},
+        )
+
+
+@router.post("/records/{record_id}/reassign-team")
+async def reassign_record_team(
+    record_id: int,
+    reassign_data: RecordReassignTeamRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    修改兑换记录绑定的 Team ID
+
+    用于管理员手动将用户转移到新 Team 后，同步更新兑换记录和兑换码中记录的
+    Team ID，避免后续质保补车时产生偏移。
+
+    Args:
+        record_id: 记录 ID
+        reassign_data: 包含 new_team_id 的请求体
+        db: 数据库会话
+        current_user: 当前用户（需要登录）
+
+    Returns:
+        结果 JSON
+    """
+    try:
+        logger.info(
+            f"管理员请求修改记录 {record_id} 的 Team 为 {reassign_data.new_team_id}"
+        )
+        result = await redemption_service.reassign_record_team(
+            record_id, reassign_data.new_team_id, db
+        )
+
+        if not result["success"]:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content=result)
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.exception("修改记录 Team 失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "修改失败，请稍后重试"},
         )
 
 

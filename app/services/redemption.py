@@ -1543,6 +1543,137 @@ class RedemptionService:
                 "error": "批量更新失败，请稍后重试",
             }
 
+    async def reassign_record_team(
+        self,
+        record_id: int,
+        new_team_id: int,
+        db_session: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        修改兑换记录绑定的 Team ID。
+
+        用于管理员手动将用户从旧 Team 移到新 Team 后，同步修正兑换记录
+        和兑换码上记录的 Team ID，避免后续质保补车时产生偏移。
+
+        操作内容：
+        1. 更新 RedemptionRecord.team_id
+        2. 更新对应 RedemptionInviteMarker（如存在）
+        3. 通过 _rebuild_code_usage_state 重建兑换码的 used_team_id
+
+        Args:
+            record_id: 使用记录 ID
+            new_team_id: 新的 Team ID
+            db_session: 数据库会话
+
+        Returns:
+            结果字典
+        """
+        try:
+            from app.models import RedemptionInviteMarker
+
+            # 1. 查询记录
+            stmt = (
+                select(RedemptionRecord)
+                .where(RedemptionRecord.id == record_id)
+                .options(selectinload(RedemptionRecord.redemption_code))
+            )
+            result = await db_session.execute(stmt)
+            record = result.scalar_one_or_none()
+
+            if not record:
+                return {"success": False, "error": f"记录 ID {record_id} 不存在"}
+
+            old_team_id = record.team_id
+
+            if old_team_id == new_team_id:
+                return {"success": False, "error": "新 Team ID 与当前相同，无需修改"}
+
+            # 2. 验证新 Team 存在
+            new_team = await db_session.get(Team, new_team_id)
+            if not new_team:
+                return {
+                    "success": False,
+                    "error": f"Team ID {new_team_id} 不存在",
+                }
+
+            if new_team.deleted_at is not None:
+                return {
+                    "success": False,
+                    "error": f"Team ID {new_team_id} 已被删除",
+                }
+
+            # 3. 检查唯一约束冲突（code + team_id + email）
+            conflict_stmt = select(RedemptionRecord).where(
+                RedemptionRecord.code == record.code,
+                RedemptionRecord.team_id == new_team_id,
+                RedemptionRecord.email == record.email,
+            )
+            conflict_result = await db_session.execute(conflict_stmt)
+            if conflict_result.scalar_one_or_none():
+                return {
+                    "success": False,
+                    "error": (
+                        f"该邮箱 ({record.email}) 在 Team {new_team_id} "
+                        f"已有同一兑换码的记录，无法重复绑定"
+                    ),
+                }
+
+            # 4. 更新记录的 team_id
+            record.team_id = new_team_id
+
+            # 4. 更新关联的 RedemptionInviteMarker（如有）
+            marker_stmt = select(RedemptionInviteMarker).where(
+                RedemptionInviteMarker.code == record.code,
+                RedemptionInviteMarker.team_id == old_team_id,
+                RedemptionInviteMarker.email == record.email,
+            )
+            marker_result = await db_session.execute(marker_stmt)
+            marker = marker_result.scalar_one_or_none()
+            if marker:
+                # 检查新组合是否已存在（唯一约束: code + team_id + email）
+                existing_marker_stmt = select(RedemptionInviteMarker).where(
+                    RedemptionInviteMarker.code == record.code,
+                    RedemptionInviteMarker.team_id == new_team_id,
+                    RedemptionInviteMarker.email == record.email,
+                )
+                existing_marker_result = await db_session.execute(existing_marker_stmt)
+                if existing_marker_result.scalar_one_or_none():
+                    # 新 Team 已有标记，删除旧的即可
+                    await db_session.delete(marker)
+                else:
+                    marker.team_id = new_team_id
+
+            # 5. 重建兑换码的使用状态（used_team_id 等）
+            code = record.redemption_code
+            if code:
+                await self._rebuild_code_usage_state(db_session, code)
+
+            await db_session.commit()
+
+            new_team_name = new_team.team_name or f"Team {new_team_id}"
+            logger.info(
+                "管理员修改兑换记录 %s 的 Team: %s -> %s (%s), 邮箱: %s, 兑换码: %s",
+                record_id,
+                old_team_id,
+                new_team_id,
+                new_team_name,
+                record.email,
+                record.code,
+            )
+
+            return {
+                "success": True,
+                "message": (
+                    f"已将记录 #{record_id} 的 Team 从 {old_team_id} "
+                    f"修改为 {new_team_id} ({new_team_name})"
+                ),
+            }
+
+        except Exception:
+            await db_session.rollback()
+            logger.exception("修改兑换记录 Team 失败")
+            return {"success": False, "error": "修改失败，请稍后重试"}
+
     async def get_stats(
         self, db_session: AsyncSession, pool_type: Optional[str] = "normal"
     ) -> Dict[str, int]:
