@@ -9,7 +9,7 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import select, update, delete, func, or_, case
+from sqlalchemy import select, update, delete, func, or_, and_, case
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -48,6 +48,69 @@ class TeamService:
         self.chatgpt_service = chatgpt_service
         self.token_parser = TokenParser()
         self.jwt_parser = JWTParser()
+
+    @staticmethod
+    def is_subscription_expired(
+        expires_at: Optional[datetime], current_time: Optional[datetime] = None
+    ) -> bool:
+        """仅根据订阅时间判断是否真实到期。"""
+        moment = current_time or get_now()
+        return bool(expires_at and expires_at < moment)
+
+    @classmethod
+    def get_effective_status_value(
+        cls,
+        status: Optional[str],
+        expires_at: Optional[datetime],
+        current_time: Optional[datetime] = None,
+    ) -> str:
+        """归一化 Team 状态，避免把未来未到期的失效 Team 展示成 expired。"""
+        normalized = str(status or "active").strip().lower() or "active"
+        if normalized == "expired" and not cls.is_subscription_expired(
+            expires_at, current_time
+        ):
+            return "banned"
+        return normalized
+
+    @classmethod
+    def get_effective_team_status(
+        cls, team: Team, current_time: Optional[datetime] = None
+    ) -> str:
+        return cls.get_effective_status_value(
+            getattr(team, "status", None),
+            getattr(team, "expires_at", None),
+            current_time=current_time,
+        )
+
+    @classmethod
+    def _status_for_access_failure(
+        cls, team: Team, current_time: Optional[datetime] = None
+    ) -> str:
+        """访问凭证失效后，真实到期记 expired，否则按 banned 处理。"""
+        if cls.is_subscription_expired(getattr(team, "expires_at", None), current_time):
+            return "expired"
+        return "banned"
+
+    @classmethod
+    def _build_effective_status_filter(
+        cls, normalized_status: str, current_time: datetime
+    ):
+        """构造与 get_effective_status_value 一致的 SQL 过滤条件。"""
+        if normalized_status == "banned":
+            return or_(
+                Team.status == "banned",
+                and_(
+                    Team.status == "expired",
+                    or_(Team.expires_at.is_(None), Team.expires_at >= current_time),
+                ),
+            )
+        if normalized_status == "expired":
+            return and_(
+                Team.status == "expired",
+                Team.expires_at.is_not(None),
+                Team.expires_at < current_time,
+            )
+        return Team.status == normalized_status
 
     def _parse_remote_expires_at(
         self, expires_at_raw: Optional[str]
@@ -360,10 +423,15 @@ class TeamService:
 
         team.error_count = (team.error_count or 0) + 1
         if team.error_count >= 3:
-            # 如果错误次数达标且是 Token 问题，标记为 expired 提高可读性
+            # 如果错误次数达标且是 Token 问题，真实到期记 expired，否则按 banned 处理
             if is_token_expired:
-                logger.error(f"Team {team.id} 连续 Token 错误，标记为 expired")
-                team.status = "expired"
+                failure_status = self._status_for_access_failure(team)
+                logger.error(
+                    "Team %s 连续 Token 错误，标记为 %s",
+                    team.id,
+                    failure_status,
+                )
+                team.status = failure_status
             else:
                 logger.error(
                     f"Team {team.id} 连续错误 {team.error_count} 次，标记为 error"
@@ -376,8 +444,13 @@ class TeamService:
             # 注意：此处会根据刷新结果立即修正状态，避免前端仍显示 active
             refreshed_token = await self.ensure_access_token(team, db_session)
             if not refreshed_token and team.status != "banned":
-                logger.error(f"Team {team.id} Token 过期且刷新失败，立即标记为 expired")
-                team.status = "expired"
+                failure_status = self._status_for_access_failure(team)
+                logger.error(
+                    "Team %s Token 过期且刷新失败，立即标记为 %s",
+                    team.id,
+                    failure_status,
+                )
+                team.status = failure_status
 
         await db_session.commit()
         return True
@@ -745,8 +818,13 @@ class TeamService:
             return current_valid_token
 
         if team.status != "banned":
-            logger.error(f"Team {team.id} Token 已过期且无法刷新，标记为 expired")
-            team.status = "expired"
+            failure_status = self._status_for_access_failure(team)
+            logger.error(
+                "Team %s Token 已过期且无法刷新，标记为 %s",
+                team.id,
+                failure_status,
+            )
+            team.status = failure_status
             team.error_count = (team.error_count or 0) + 1
         await db_session.commit()
         return None
@@ -1708,9 +1786,16 @@ class TeamService:
                         "该 Team 账号已被封禁或凭证已失效，请重新导入可用账号",
                     )
 
-                if team.status != "expired":
-                    team.status = "expired"
+                failure_status = self._status_for_access_failure(team)
+                if team.status != failure_status:
+                    team.status = failure_status
                     await db_session.commit()
+
+                if failure_status == "banned":
+                    return self._admin_error(
+                        "team_banned",
+                        "该 Team 账号已被封禁或凭证已失效，请重新导入可用账号",
+                    )
 
                 return self._admin_error(
                     "token_refresh_failed",
@@ -1776,22 +1861,40 @@ class TeamService:
                             logger.info(f"Team {team.id} 自动刷新 Token 后重试同步成功")
                         else:
                             # 刷新成功但请求依然失败，标记为过期/异常
+                            failure_status = self._status_for_access_failure(team)
                             logger.error(
-                                f"Team {team.id} Token 刷新成功但获取账户信息仍失败，标记为 expired"
+                                "Team %s Token 刷新成功但获取账户信息仍失败，标记为 %s",
+                                team.id,
+                                failure_status,
                             )
-                            team.status = "expired"
+                            team.status = failure_status
                             if not db_session.in_transaction():
                                 await db_session.commit()
+                            if failure_status == "banned":
+                                return self._admin_error(
+                                    "team_banned",
+                                    "该 Team 账号已被封禁或凭证已失效，请重新导入可用账号",
+                                )
                             return self._admin_error(
                                 "account_info_unavailable_after_refresh",
                                 "凭证刷新成功，但仍无法拉取 Team 信息，请稍后重试；若持续失败，建议重新导入该账号",
                             )
                     else:
                         # 刷新失败，标记为过期
-                        logger.error(f"Team {team.id} Token 刷新失败，标记为 expired")
-                        team.status = "expired"
+                        failure_status = self._status_for_access_failure(team)
+                        logger.error(
+                            "Team %s Token 刷新失败，标记为 %s",
+                            team.id,
+                            failure_status,
+                        )
+                        team.status = failure_status
                         if not db_session.in_transaction():
                             await db_session.commit()
+                        if failure_status == "banned":
+                            return self._admin_error(
+                                "team_banned",
+                                "该 Team 账号已被封禁或凭证已失效，请重新导入可用账号",
+                            )
                         return self._admin_error(
                             "token_refresh_failed",
                             "该 Team 的登录凭证已过期，且自动刷新失败，请重新登录或重新导入",
@@ -2902,10 +3005,15 @@ class TeamService:
             # 3. 如果有状态过滤,添加过滤条件
             if status:
                 normalized_status = str(status).strip().lower()
+                current_time = get_now()
                 if normalized_status == "normal":
                     stmt = stmt.where(Team.status.in_(NORMAL_TEAM_STATUSES))
                 elif normalized_status != "all":
-                    stmt = stmt.where(Team.status == normalized_status)
+                    stmt = stmt.where(
+                        self._build_effective_status_filter(
+                            normalized_status, current_time
+                        )
+                    )
 
             if pool_type:
                 stmt = stmt.where(Team.pool_type == pool_type)
@@ -2936,6 +3044,7 @@ class TeamService:
             # 构建返回数据
             team_list = []
             for team in teams:
+                effective_status = self.get_effective_team_status(team)
                 team_list.append(
                     {
                         "id": team.id,
@@ -2949,7 +3058,7 @@ class TeamService:
                         else None,
                         "current_members": team.current_members,
                         "max_members": team.max_members,
-                        "status": team.status,
+                        "status": effective_status,
                         "device_code_auth_enabled": getattr(
                             team, "device_code_auth_enabled", False
                         ),

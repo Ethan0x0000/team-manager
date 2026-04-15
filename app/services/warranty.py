@@ -34,6 +34,12 @@ class WarrantyService:
 
         self.team_service = TeamService()
 
+    @staticmethod
+    def _effective_team_status(team: Team) -> str:
+        from app.services.team import TeamService
+
+        return TeamService.get_effective_team_status(team)
+
     async def _get_warranty_start_time(
         self,
         db_session: AsyncSession,
@@ -312,9 +318,11 @@ class WarrantyService:
                     )
                     continue
 
+                effective_team_status = self._effective_team_status(team)
+
                 # 1.1 实时一致性校验 (自愈逻辑)
                 # 如果数据库有记录，但 API 列表里没你，说明是虚假成功，直接后台修复
-                if team.status != "banned" and team.status != "expired":
+                if effective_team_status not in ("banned", "expired"):
                     logger.info(
                         f"质保查询: 正在实时测试 Team {team.id} ({team.team_name}) 的状态"
                     )
@@ -386,7 +394,7 @@ class WarrantyService:
                         primary_code = code_obj.code
 
                 # 记录封号 Team
-                if team.status == "banned":
+                if effective_team_status == "banned":
                     banned_teams_info.append(
                         {
                             "team_id": team.id,
@@ -412,7 +420,7 @@ class WarrantyService:
                         else None,
                         "team_id": team.id,
                         "team_name": team.team_name,
-                        "team_status": team.status,
+                        "team_status": effective_team_status,
                         "team_expires_at": team.expires_at.isoformat()
                         if team.expires_at
                         else None,
@@ -521,8 +529,9 @@ class WarrantyService:
                 team = result.scalar_one_or_none()
 
                 if team:
+                    effective_team_status = self._effective_team_status(team)
                     is_expired = team.expires_at and team.expires_at < get_now()
-                    if team.status in ["active", "full"] and not is_expired:
+                    if effective_team_status in ["active", "full"] and not is_expired:
                         # --- 自愈逻辑：验证是否真的在 Team 中 ---
                         # 针对“虚假成功”导致的拉人记录残留进行清理
                         logger.info(
@@ -616,8 +625,9 @@ class WarrantyService:
 
                 if team:
                     # 如果有任何一个关联 Team 还是 active/full 状态，且未过期
+                    effective_team_status = self._effective_team_status(team)
                     is_expired = team.expires_at and team.expires_at < get_now()
-                    if team.status in ["active", "full"] and not is_expired:
+                    if effective_team_status in ["active", "full"] and not is_expired:
                         return {
                             "success": True,
                             "can_reuse": False,
@@ -631,7 +641,10 @@ class WarrantyService:
                 stmt = select(Team).where(Team.id == record.team_id)
                 result = await db_session.execute(stmt)
                 team = result.scalar_one_or_none()
-                if team and team.status in ("banned", "deleted"):
+                if team and self._effective_team_status(team) in (
+                    "banned",
+                    "deleted",
+                ):
                     has_banned_or_deleted_team = True
                     break
                 if team is None:
