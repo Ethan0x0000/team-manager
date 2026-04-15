@@ -3108,6 +3108,8 @@ class TeamService:
             结果字典
         """
         try:
+            normalized_email = str(email or "").strip().lower()
+
             # 1. 获取最新成员和邀请列表
             members_result = await self.get_team_members(team_id, db_session)
             if not members_result["success"]:
@@ -3116,7 +3118,14 @@ class TeamService:
             all_members = members_result["members"]
 
             # 2. 查找匹配的记录
-            target = next((m for m in all_members if m["email"] == email), None)
+            target = next(
+                (
+                    m
+                    for m in all_members
+                    if str(m.get("email") or "").strip().lower() == normalized_email
+                ),
+                None,
+            )
 
             if not target:
                 logger.warning(f"在 Team {team_id} 中未找到邮箱为 {email} 的成员或邀请")
@@ -3131,11 +3140,13 @@ class TeamService:
             if target["status"] == "joined":
                 # 已加入，调用删除成员
                 return await self.delete_team_member(
-                    team_id, target["user_id"], db_session, email=email
+                    team_id, target["user_id"], db_session, email=normalized_email
                 )
             else:
                 # 待加入，调用撤回邀请
-                return await self.revoke_team_invite(team_id, email, db_session)
+                return await self.revoke_team_invite(
+                    team_id, normalized_email, db_session
+                )
 
         except Exception:
             logger.exception("撤回邀请或删除成员时发生异常")

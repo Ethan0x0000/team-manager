@@ -364,14 +364,17 @@
         </div>
         <div class="modal-body">
             <div class="alert alert-info" style="margin-bottom: 1rem;">
-                扫描可安全清理的无效兑换码。
+                扫描会收集所有已过期兑换码，并按<strong>最后一次兑换记录</strong>执行两层筛查：若最后绑定 Team 仍为正常状态，会先从该 Team 移除邮箱；若最后绑定 Team 已失效/删除，则直接进入可删除列表。
             </div>
             <div id="invalidCodesEmptyState" class="empty-state" style="display: none; padding: 1rem 0;">
-                <p>当前没有扫描到可安全清理的无效兑换码。</p>
+                <p id="invalidCodesEmptyText">当前没有扫描到可安全清理的过期兑换码。</p>
             </div>
             <div id="invalidCodesTableWrapper" style="display: none;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap;">
-                    <div>共扫描到 <strong id="invalidCodesCount">0</strong> 个可清理兑换码</div>
+                    <div>
+                        共扫描 <strong id="invalidCodesScannedCount">0</strong> 个过期兑换码，
+                        其中 <strong id="invalidCodesCount">0</strong> 个已标记为可删除
+                    </div>
                 </div>
                 <div class="table-container">
                     <table class="data-table">
@@ -380,8 +383,10 @@
                                 <th style="width: 40px;"><input type="checkbox" id="selectAllInvalidCodes" style="width: auto; margin: 0;" onclick="toggleSelectAllInvalidCodes(this)"></th>
                                 <th>兑换码</th>
                                 <th>过期参考时间</th>
+                                <th>最后兑换邮箱</th>
                                 <th>关联记录数</th>
-                                <th>关联 Team 状态</th>
+                                <th>最后 Team 状态</th>
+                                <th>扫描动作</th>
                                 <th>说明</th>
                             </tr>
                         </thead>
@@ -882,25 +887,36 @@
         }
     }
 
-    function renderInvalidCodes(codes) {
-        scannedInvalidCodes = codes || [];
+    function renderInvalidCodes(payload) {
+        const codes = payload?.codes || [];
+        const scannedTotal = payload?.scanned_total || 0;
+        const skippedTotal = payload?.skipped_total || 0;
+        scannedInvalidCodes = codes;
         const emptyState = document.getElementById('invalidCodesEmptyState');
+        const emptyText = document.getElementById('invalidCodesEmptyText');
         const tableWrapper = document.getElementById('invalidCodesTableWrapper');
         const tableBody = document.getElementById('invalidCodesTableBody');
         const countEl = document.getElementById('invalidCodesCount');
+        const scannedCountEl = document.getElementById('invalidCodesScannedCount');
         const selectAll = document.getElementById('selectAllInvalidCodes');
         const cleanupBar = document.getElementById('invalidCleanupBar');
         const cleanupSelectedCount = document.getElementById('invalidCleanupSelectedCount');
 
-        if (!tableBody || !emptyState || !tableWrapper || !countEl || !selectAll || !cleanupBar || !cleanupSelectedCount) return;
+        if (!tableBody || !emptyState || !tableWrapper || !countEl || !scannedCountEl || !selectAll || !cleanupBar || !cleanupSelectedCount) return;
 
         tableBody.innerHTML = '';
         countEl.innerText = scannedInvalidCodes.length;
+        scannedCountEl.innerText = scannedTotal;
         selectAll.checked = false;
         cleanupBar.style.display = 'none';
         cleanupSelectedCount.innerText = '0';
 
         if (!scannedInvalidCodes.length) {
+            if (emptyText) {
+                emptyText.innerText = scannedTotal > 0
+                    ? `已扫描 ${scannedTotal} 个过期兑换码，但当前没有可直接删除的项${skippedTotal > 0 ? '（仍有项未通过筛查）' : ''}。`
+                    : '当前没有扫描到可安全清理的过期兑换码。';
+            }
             emptyState.style.display = 'block';
             tableWrapper.style.display = 'none';
             return;
@@ -911,13 +927,17 @@
 
         scannedInvalidCodes.forEach((item) => {
             const tr = document.createElement('tr');
-            const teamStatusText = (item.team_statuses || []).map((team) => `#${team.team_id}: ${team.status}`).join('，') || 'Team 已删除';
+            const teamStatusText = item.last_team_id
+                ? `#${item.last_team_id}: ${item.last_team_status || 'unknown'}`
+                : '无关联 Team';
             tr.innerHTML = `
                 <td><input type="checkbox" class="invalid-code-checkbox" value="${escapeHtml(item.code)}" style="width: auto; margin: 0;" onchange="updateInvalidCleanupSelection()"></td>
                 <td><code>${escapeHtml(item.code)}</code></td>
                 <td>${escapeHtml(formatDateTime(item.expired_at))}</td>
+                <td>${escapeHtml(item.last_record_email || '-')}</td>
                 <td>${escapeHtml(item.record_count)}</td>
                 <td>${escapeHtml(teamStatusText)}</td>
+                <td>${escapeHtml(item.cleanup_action_label || item.cleanup_action || '-')}</td>
                 <td>${escapeHtml(item.reason || '-')}</td>
             `;
             tableBody.appendChild(tr);
@@ -926,11 +946,16 @@
 
     async function scanInvalidCodes() {
         try {
-            const response = await fetch('/admin/codes/invalid/scan');
+            const response = await fetch('/admin/codes/invalid/scan', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
             const result = await response.json();
 
             if (response.ok && result.success) {
-                renderInvalidCodes(result.codes || []);
+                renderInvalidCodes(result);
                 showModal('invalidCodesModal');
                 if (window.lucide) {
                     lucide.createIcons();

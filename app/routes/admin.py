@@ -1493,11 +1493,11 @@ async def delete_code(
         )
 
 
-@router.get("/codes/invalid/scan")
+@router.post("/codes/invalid/scan")
 async def scan_invalid_codes(
     db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_admin)
 ):
-    """扫描可安全清理的无效兑换码。"""
+    """扫描过期兑换码，并按最后一次兑换记录执行可删除筛查。"""
     try:
         result = await redemption_service.get_invalid_code_candidates(
             db, pool_type="normal"
