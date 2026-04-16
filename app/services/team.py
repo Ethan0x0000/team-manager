@@ -64,13 +64,12 @@ class TeamService:
         expires_at: Optional[datetime],
         current_time: Optional[datetime] = None,
     ) -> str:
-        """归一化 Team 状态，避免把未来未到期的失效 Team 展示成 expired。"""
-        normalized = str(status or "active").strip().lower() or "active"
-        if normalized == "expired" and not cls.is_subscription_expired(
-            expires_at, current_time
-        ):
-            return "banned"
-        return normalized
+        """归一化 Team 状态字符串。
+
+        不再将 expired 隐式转换为 banned —— banned 仅由 _handle_api_error
+        根据明确封禁信号设置，避免列表与编辑弹窗状态不一致。
+        """
+        return str(status or "active").strip().lower() or "active"
 
     @classmethod
     def get_effective_team_status(
@@ -86,30 +85,22 @@ class TeamService:
     def _status_for_access_failure(
         cls, team: Team, current_time: Optional[datetime] = None
     ) -> str:
-        """访问凭证失效后，真实到期记 expired，否则按 banned 处理。"""
+        """访问凭证失效后，真实到期记 expired，否则记 error（可恢复）。
+
+        banned 仅由 _handle_api_error 在收到明确封禁信号时设置。
+        """
         if cls.is_subscription_expired(getattr(team, "expires_at", None), current_time):
             return "expired"
-        return "banned"
+        return "error"
 
     @classmethod
     def _build_effective_status_filter(
         cls, normalized_status: str, current_time: datetime
     ):
-        """构造与 get_effective_status_value 一致的 SQL 过滤条件。"""
-        if normalized_status == "banned":
-            return or_(
-                Team.status == "banned",
-                and_(
-                    Team.status == "expired",
-                    or_(Team.expires_at.is_(None), Team.expires_at >= current_time),
-                ),
-            )
-        if normalized_status == "expired":
-            return and_(
-                Team.status == "expired",
-                Team.expires_at.is_not(None),
-                Team.expires_at < current_time,
-            )
+        """构造与 get_effective_status_value 一致的 SQL 过滤条件。
+
+        banned / expired 不再互相映射，直接按 DB 字段过滤。
+        """
         return Team.status == normalized_status
 
     def _parse_remote_expires_at(
@@ -423,7 +414,7 @@ class TeamService:
 
         team.error_count = (team.error_count or 0) + 1
         if team.error_count >= 3:
-            # 如果错误次数达标且是 Token 问题，真实到期记 expired，否则按 banned 处理
+            # 如果错误次数达标且是 Token 问题，真实到期记 expired，否则记 error
             if is_token_expired:
                 failure_status = self._status_for_access_failure(team)
                 logger.error(
