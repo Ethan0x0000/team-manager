@@ -1576,6 +1576,20 @@ class RedemptionService:
                 .values(values)
             )
             await db_session.execute(stmt)
+            await db_session.flush()
+
+            # 对已使用的兑换码重新计算 warranty_expires_at，
+            # 否则修改 warranty_days / has_warranty 后过期判定仍按旧值。
+            affected_stmt = select(RedemptionCode).where(
+                RedemptionCode.code.in_(codes),
+                RedemptionCode.used_at.isnot(None),
+            )
+            affected_result = await db_session.execute(affected_stmt)
+            affected_codes = affected_result.scalars().all()
+
+            for code_obj in affected_codes:
+                await self._rebuild_code_usage_state(db_session, code_obj)
+
             await db_session.commit()
 
             logger.info(f"成功批量更新 {len(codes)} 个兑换码")
