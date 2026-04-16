@@ -379,21 +379,10 @@
             <div id="invalidCodesEmptyState" class="empty-state" style="display: none; padding: 1rem 0;">
                 <p id="invalidCodesEmptyText">当前没有扫描到需要处理的过期兑换码。</p>
             </div>
-            <div id="invalidCodesResults" style="display: none;">
-                <div class="invalid-summary-grid">
-                    <div class="invalid-summary-card">
-                        <span class="invalid-summary-label">已扫描过期码</span>
-                        <strong id="invalidCodesScannedCount">0</strong>
-                    </div>
-                    <div class="invalid-summary-card warning">
-                        <span class="invalid-summary-label">待移出 Team</span>
-                        <strong id="invalidNeedsRemovalCount">0</strong>
-                    </div>
-                    <div class="invalid-summary-card success">
-                        <span class="invalid-summary-label">可直接删除</span>
-                        <strong id="invalidReadyDeleteCount">0</strong>
-                    </div>
-                </section>
+            <div id="invalidCodesResults" class="invalid-results-stack" style="display: none;">
+                <p id="invalidCodesSummaryLine" class="invalid-summary-line">
+                    本次共扫描 <strong class="invalid-summary-highlight">0</strong> 个过期兑换码，其中 <strong class="invalid-summary-highlight warning">0</strong> 个需先移出 Team，<strong class="invalid-summary-highlight success">0</strong> 个可直接删除。
+                </p>
 
                 <section class="invalid-result-section">
                     <div class="invalid-result-header">
@@ -682,43 +671,56 @@
         font-size: 0.95rem;
     }
 
-    .invalid-summary-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.75rem;
-    }
-
-    .invalid-summary-card {
-        padding: 1rem;
-        border-radius: 14px;
-        border: 1px solid var(--border-color);
-        background: color-mix(in srgb, var(--bg-surface) 96%, #0f172a 4%);
+    .invalid-results-stack {
         display: flex;
         flex-direction: column;
-        gap: 0.35rem;
+        align-items: stretch;
+        gap: 1rem;
     }
 
-    .invalid-summary-card.warning {
-        border-color: rgba(245, 158, 11, 0.28);
-        background: rgba(245, 158, 11, 0.08);
+    .invalid-summary-line {
+        margin: 0;
+        padding: 0.9rem 1rem;
+        border-radius: 14px;
+        border: 1px solid rgba(59, 130, 246, 0.18);
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(15, 23, 42, 0.03));
+        color: var(--text-color);
+        font-size: 0.95rem;
+        line-height: 1.65;
     }
 
-    .invalid-summary-card.success {
-        border-color: rgba(34, 197, 94, 0.28);
-        background: rgba(34, 197, 94, 0.08);
+    .invalid-summary-highlight {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 2rem;
+        margin: 0 0.15rem;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.14);
+        color: #1d4ed8;
+        font-size: 0.95rem;
+        line-height: 1.2;
     }
 
-    .invalid-summary-label {
-        font-size: 0.875rem;
+    .invalid-summary-highlight.warning {
+        background: rgba(245, 158, 11, 0.16);
+        color: #b45309;
+    }
+
+    .invalid-summary-highlight.success {
+        background: rgba(34, 197, 94, 0.16);
+        color: #15803d;
+    }
+
+    .invalid-summary-highlight.muted {
+        background: rgba(148, 163, 184, 0.16);
         color: var(--text-secondary);
     }
 
-    .invalid-summary-card strong {
-        font-size: 1.5rem;
-        line-height: 1;
-    }
-
     .invalid-result-section {
+        width: 100%;
+        min-width: 0;
         border: 1px solid var(--border-color);
         border-radius: 16px;
         padding: 1rem;
@@ -851,10 +853,6 @@
             width: 100%;
             justify-content: flex-start;
             flex-wrap: wrap;
-        }
-
-        .invalid-summary-grid {
-            grid-template-columns: 1fr;
         }
 
         .invalid-result-header,
@@ -1347,15 +1345,11 @@
         const emptyText = document.getElementById('invalidCodesEmptyText');
         const results = document.getElementById('invalidCodesResults');
         const footer = document.getElementById('invalidCodesFooter');
-        const scannedCountEl = document.getElementById('invalidCodesScannedCount');
-        const needsCountEl = document.getElementById('invalidNeedsRemovalCount');
-        const readyCountEl = document.getElementById('invalidReadyDeleteCount');
+        const summaryLineEl = document.getElementById('invalidCodesSummaryLine');
 
-        if (!emptyState || !emptyText || !results || !footer || !scannedCountEl || !needsCountEl || !readyCountEl) return;
+        if (!emptyState || !emptyText || !results || !footer || !summaryLineEl) return;
 
-        scannedCountEl.innerText = scannedTotal;
-        needsCountEl.innerText = needsRemoval.length;
-        readyCountEl.innerText = readyToDelete.length;
+        summaryLineEl.innerHTML = `本次共扫描 <strong class="invalid-summary-highlight">${scannedTotal}</strong> 个过期兑换码，其中 <strong class="invalid-summary-highlight warning">${needsRemoval.length}</strong> 个需先移出 Team，<strong class="invalid-summary-highlight success">${readyToDelete.length}</strong> 个可直接删除${skippedTotal > 0 ? `，另有 <strong class="invalid-summary-highlight muted">${skippedTotal}</strong> 个暂未进入处理列表` : ''}。`;
 
         if (!scannedInvalidCodes.length) {
             emptyText.innerText = scannedTotal > 0
@@ -1368,7 +1362,7 @@
         }
 
         emptyState.style.display = 'none';
-        results.style.display = 'block';
+        results.style.display = 'flex';
         footer.style.display = 'flex';
 
         renderInvalidTableGroup('remove', needsRemoval);
