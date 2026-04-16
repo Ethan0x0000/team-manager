@@ -163,6 +163,12 @@ class InvalidCodeCleanupRequest(BaseModel):
     codes: List[str] = Field(..., description="待清理的无效兑换码列表")
 
 
+class InvalidCodeTeamRemovalRequest(BaseModel):
+    """无效兑换码 Team 邮箱移除请求"""
+
+    codes: List[str] = Field(..., description="待从 Team 中移出邮箱的兑换码列表")
+
+
 class BulkActionRequest(BaseModel):
     """批量操作请求"""
 
@@ -1534,6 +1540,31 @@ async def cleanup_invalid_codes(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": "清理无效兑换码失败，请稍后重试"},
+        )
+
+
+@router.post("/codes/invalid/remove-from-team")
+async def remove_invalid_code_team_members(
+    removal_data: InvalidCodeTeamRemovalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    """对扫描出的兑换码执行显式 Team 邮箱移除。"""
+    try:
+        result = await redemption_service.remove_invalid_code_team_members(
+            removal_data.codes,
+            db,
+            pool_type="normal",
+        )
+        status_code = (
+            status.HTTP_200_OK if result["success"] else status.HTTP_400_BAD_REQUEST
+        )
+        return JSONResponse(status_code=status_code, content=result)
+    except Exception:
+        logger.exception("移出无效兑换码对应 Team 邮箱失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "移出 Team 邮箱失败，请稍后重试"},
         )
 
 

@@ -357,48 +357,117 @@
 
 <!-- 无效兑换码扫描结果 -->
 <div id="invalidCodesModal" class="modal-overlay">
-    <div class="modal" style="max-width: 760px;">
+    <div class="modal invalid-codes-modal" style="max-width: 920px;">
         <div class="modal-header">
             <h3>无效兑换码扫描结果</h3>
             <button class="modal-close" onclick="hideModal('invalidCodesModal')">&times;</button>
         </div>
-        <div class="modal-body">
+        <div class="modal-body invalid-codes-modal-body">
             <div class="alert alert-info" style="margin-bottom: 1rem;">
-                扫描会收集所有已过期兑换码，并按<strong>最后一次兑换记录</strong>执行两层筛查：若最后绑定 Team 仍为正常状态，会先从该 Team 移除邮箱；若最后绑定 Team 已失效/删除，则直接进入可删除列表。
+                扫描只会收集所有已过期兑换码并按<strong>最后一次兑换记录</strong>分类展示：若最后绑定 Team 仍为正常状态，会先进入“待移出 Team”列表；若最后绑定 Team 已失效/删除，或邮箱已不在 Team 中，则会进入“可直接删除”列表。移出 Team 与删除兑换码都会由你手动确认触发。
+            </div>
+            <div id="invalidCodesProgressPanel" class="invalid-progress-panel" style="display: none;">
+                <div class="invalid-progress-header">
+                    <strong id="invalidCodesProgressTitle">扫描中</strong>
+                    <span id="invalidCodesProgressPercent">处理中</span>
+                </div>
+                <div class="invalid-progress-bar">
+                    <div id="invalidCodesProgressFill" class="invalid-progress-fill is-indeterminate"></div>
+                </div>
+                <div id="invalidCodesProgressMessage" class="invalid-progress-message">正在准备扫描过期兑换码…</div>
             </div>
             <div id="invalidCodesEmptyState" class="empty-state" style="display: none; padding: 1rem 0;">
-                <p id="invalidCodesEmptyText">当前没有扫描到可安全清理的过期兑换码。</p>
+                <p id="invalidCodesEmptyText">当前没有扫描到需要处理的过期兑换码。</p>
             </div>
-            <div id="invalidCodesTableWrapper" style="display: none;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap;">
-                    <div>
-                        共扫描 <strong id="invalidCodesScannedCount">0</strong> 个过期兑换码，
-                        其中 <strong id="invalidCodesCount">0</strong> 个已标记为可删除
+            <div id="invalidCodesResults" style="display: none;">
+                <div class="invalid-summary-grid">
+                    <div class="invalid-summary-card">
+                        <span class="invalid-summary-label">已扫描过期码</span>
+                        <strong id="invalidCodesScannedCount">0</strong>
                     </div>
-                </div>
-                <div class="table-container">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th style="width: 40px;"><input type="checkbox" id="selectAllInvalidCodes" style="width: auto; margin: 0;" onclick="toggleSelectAllInvalidCodes(this)"></th>
-                                <th>兑换码</th>
-                                <th>过期参考时间</th>
-                                <th>最后兑换邮箱</th>
-                                <th>关联记录数</th>
-                                <th>最后 Team 状态</th>
-                                <th>扫描动作</th>
-                                <th>说明</th>
-                            </tr>
-                        </thead>
-                        <tbody id="invalidCodesTableBody"></tbody>
-                    </table>
-                </div>
-                <div id="invalidCleanupBar" class="invalid-cleanup-bar" style="display: none;">
-                    <div>已选择 <strong id="invalidCleanupSelectedCount">0</strong> 个无效兑换码</div>
-                    <button onclick="cleanupInvalidCodes()" class="btn btn-danger">
-                        <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i> 确认删除
-                    </button>
-                </div>
+                    <div class="invalid-summary-card warning">
+                        <span class="invalid-summary-label">待移出 Team</span>
+                        <strong id="invalidNeedsRemovalCount">0</strong>
+                    </div>
+                    <div class="invalid-summary-card success">
+                        <span class="invalid-summary-label">可直接删除</span>
+                        <strong id="invalidReadyDeleteCount">0</strong>
+                    </div>
+                </section>
+
+                <section class="invalid-result-section">
+                    <div class="invalid-result-header">
+                        <div>
+                            <h4>需先移出 Team 的兑换码</h4>
+                            <p>这些兑换码最后一次绑定的 Team 仍为正常状态，需要你先确认移出邮箱。</p>
+                        </div>
+                        <span id="invalidRemoveCount" class="invalid-result-count">0</span>
+                    </div>
+                    <div id="invalidRemoveEmpty" class="invalid-result-empty" style="display: none;">
+                        当前没有需要先移出 Team 的兑换码。
+                    </div>
+                    <div id="invalidRemoveTableWrapper" class="table-container" style="display: none;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px;"><input type="checkbox" id="selectAllInvalidRemovalCodes" style="width: auto; margin: 0;" onclick="toggleSelectAllInvalidGroup('remove', this)"></th>
+                                    <th>兑换码</th>
+                                    <th>过期参考时间</th>
+                                    <th>最后兑换邮箱</th>
+                                    <th>关联记录数</th>
+                                    <th>最后 Team 状态</th>
+                                    <th>当前动作</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody id="invalidRemoveTableBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="invalid-result-section">
+                    <div class="invalid-result-header">
+                        <div>
+                            <h4>可直接删除的兑换码</h4>
+                            <p>包括最后一次 Team 已失效/删除，或邮箱已不在 Team 中的兑换码。</p>
+                        </div>
+                        <span id="invalidDeleteCount" class="invalid-result-count success">0</span>
+                    </div>
+                    <div id="invalidDeleteEmpty" class="invalid-result-empty" style="display: none;">
+                        当前没有可直接删除的兑换码。
+                    </div>
+                    <div id="invalidDeleteTableWrapper" class="table-container" style="display: none;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px;"><input type="checkbox" id="selectAllInvalidDeleteCodes" style="width: auto; margin: 0;" onclick="toggleSelectAllInvalidGroup('delete', this)"></th>
+                                    <th>兑换码</th>
+                                    <th>过期参考时间</th>
+                                    <th>最后兑换邮箱</th>
+                                    <th>关联记录数</th>
+                                    <th>最后 Team 状态</th>
+                                    <th>当前动作</th>
+                                    <th>说明</th>
+                                </tr>
+                            </thead>
+                            <tbody id="invalidDeleteTableBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </div>
+        <div id="invalidCodesFooter" class="invalid-codes-footer" style="display: none;">
+            <div class="invalid-codes-footer-info">
+                <div>已选择 <strong id="invalidActionSelectedTotal">0</strong> 项待处理</div>
+                <small id="invalidActionSelectedBreakdown">待移出 Team 0 项，可删除 0 项</small>
+            </div>
+            <div class="invalid-codes-footer-actions">
+                <button id="invalidRemoveButton" onclick="removeSelectedInvalidCodeTeams()" class="btn btn-warning" disabled>
+                    <i data-lucide="user-minus" style="width: 16px; height: 16px;"></i> 确认移出 Team
+                </button>
+                <button id="invalidDeleteButton" onclick="cleanupInvalidCodes()" class="btn btn-danger" disabled>
+                    <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i> 确认删除兑换码
+                </button>
             </div>
         </div>
     </div>
@@ -534,18 +603,224 @@
         flex-wrap: nowrap;
     }
 
-    .invalid-cleanup-bar {
-        position: sticky;
-        bottom: 0;
-        margin-top: 1rem;
-        padding: 1rem;
-        border-top: 1px solid var(--border-color);
-        background: rgba(255, 255, 255, 0.96);
+    .invalid-codes-modal {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+    }
+
+    .invalid-codes-modal-body {
+        display: flex;
+        flex-direction: column;
         gap: 1rem;
-        backdrop-filter: blur(8px);
+    }
+
+    .invalid-progress-panel {
+        border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border-color));
+        border-radius: 14px;
+        padding: 1rem;
+        background: color-mix(in srgb, var(--bg-surface) 94%, var(--primary) 6%);
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .invalid-progress-panel.success {
+        border-color: rgba(34, 197, 94, 0.35);
+        background: rgba(34, 197, 94, 0.08);
+    }
+
+    .invalid-progress-panel.error {
+        border-color: rgba(239, 68, 68, 0.35);
+        background: rgba(239, 68, 68, 0.08);
+    }
+
+    .invalid-progress-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+    }
+
+    .invalid-progress-bar {
+        position: relative;
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.22);
+        overflow: hidden;
+    }
+
+    .invalid-progress-fill {
+        height: 100%;
+        width: 0;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--primary) 0%, #7c3aed 100%);
+        transition: width 0.25s ease;
+    }
+
+    .invalid-progress-fill.is-indeterminate {
+        width: 42%;
+        animation: invalidProgressIndeterminate 1.2s ease-in-out infinite;
+    }
+
+    @keyframes invalidProgressIndeterminate {
+        0% {
+            transform: translateX(-120%);
+        }
+
+        50% {
+            transform: translateX(45%);
+        }
+
+        100% {
+            transform: translateX(220%);
+        }
+    }
+
+    .invalid-progress-message {
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+    }
+
+    .invalid-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+    }
+
+    .invalid-summary-card {
+        padding: 1rem;
+        border-radius: 14px;
+        border: 1px solid var(--border-color);
+        background: color-mix(in srgb, var(--bg-surface) 96%, #0f172a 4%);
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+    }
+
+    .invalid-summary-card.warning {
+        border-color: rgba(245, 158, 11, 0.28);
+        background: rgba(245, 158, 11, 0.08);
+    }
+
+    .invalid-summary-card.success {
+        border-color: rgba(34, 197, 94, 0.28);
+        background: rgba(34, 197, 94, 0.08);
+    }
+
+    .invalid-summary-label {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+    }
+
+    .invalid-summary-card strong {
+        font-size: 1.5rem;
+        line-height: 1;
+    }
+
+    .invalid-result-section {
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 1rem;
+        background: color-mix(in srgb, var(--bg-surface) 96%, #0f172a 4%);
+        display: flex;
+        flex-direction: column;
+        gap: 0.875rem;
+    }
+
+    .invalid-result-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+    }
+
+    .invalid-result-header h4 {
+        margin: 0;
+        font-size: 1rem;
+    }
+
+    .invalid-result-header p {
+        margin: 0.35rem 0 0;
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+    }
+
+    .invalid-result-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 2.25rem;
+        padding: 0.35rem 0.75rem;
+        border-radius: 999px;
+        background: rgba(245, 158, 11, 0.12);
+        color: #b45309;
+        font-weight: 700;
+    }
+
+    .invalid-result-count.success {
+        background: rgba(34, 197, 94, 0.12);
+        color: #15803d;
+    }
+
+    .invalid-result-empty {
+        padding: 1rem;
+        border-radius: 12px;
+        background: rgba(148, 163, 184, 0.08);
+        color: var(--text-secondary);
+    }
+
+    .invalid-checkbox-cell {
+        width: 40px;
+    }
+
+    .invalid-action-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.25rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        background: rgba(59, 130, 246, 0.12);
+        color: #1d4ed8;
+    }
+
+    .invalid-action-badge.warning {
+        background: rgba(245, 158, 11, 0.14);
+        color: #b45309;
+    }
+
+    .invalid-action-badge.success {
+        background: rgba(34, 197, 94, 0.14);
+        color: #15803d;
+    }
+
+    .invalid-codes-footer {
+        flex-shrink: 0;
+        padding: 1rem 1.5rem 1.25rem;
+        border-top: 1px solid var(--border-color);
+        background: color-mix(in srgb, var(--bg-surface) 94%, #0f172a 6%);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        backdrop-filter: blur(10px);
+    }
+
+    .invalid-codes-footer-info {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+
+    .invalid-codes-footer-info small {
+        color: var(--text-secondary);
+    }
+
+    .invalid-codes-footer-actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
     }
 
     @media (max-width: 1240px) {
@@ -576,6 +851,21 @@
             width: 100%;
             justify-content: flex-start;
             flex-wrap: wrap;
+        }
+
+        .invalid-summary-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .invalid-result-header,
+        .invalid-codes-footer {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .invalid-codes-footer-actions .btn {
+            width: 100%;
+            justify-content: center;
         }
     }
 
@@ -609,6 +899,107 @@
 {% block extra_js %}
 <script>
     let scannedInvalidCodes = [];
+    let invalidScanMeta = {
+        scannedTotal: 0,
+        skippedTotal: 0,
+    };
+    let invalidActionBusy = false;
+
+    function waitForNextPaint() {
+        return new Promise((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+    }
+
+    function resetInvalidCodesModal() {
+        scannedInvalidCodes = [];
+        invalidScanMeta = {
+            scannedTotal: 0,
+            skippedTotal: 0,
+        };
+
+        const results = document.getElementById('invalidCodesResults');
+        const emptyState = document.getElementById('invalidCodesEmptyState');
+        const footer = document.getElementById('invalidCodesFooter');
+        const removeBody = document.getElementById('invalidRemoveTableBody');
+        const deleteBody = document.getElementById('invalidDeleteTableBody');
+        const emptyText = document.getElementById('invalidCodesEmptyText');
+        const removeSelectAll = document.getElementById('selectAllInvalidRemovalCodes');
+        const deleteSelectAll = document.getElementById('selectAllInvalidDeleteCodes');
+
+        if (results) results.style.display = 'none';
+        if (emptyState) emptyState.style.display = 'none';
+        if (footer) footer.style.display = 'none';
+        if (removeBody) removeBody.innerHTML = '';
+        if (deleteBody) deleteBody.innerHTML = '';
+        if (emptyText) emptyText.innerText = '当前没有扫描到需要处理的过期兑换码。';
+        if (removeSelectAll) {
+            removeSelectAll.checked = false;
+            removeSelectAll.indeterminate = false;
+        }
+        if (deleteSelectAll) {
+            deleteSelectAll.checked = false;
+            deleteSelectAll.indeterminate = false;
+        }
+
+        setInvalidProgress({ visible: false });
+        updateInvalidActionSelection();
+    }
+
+    function showInvalidEmptyState(text) {
+        const results = document.getElementById('invalidCodesResults');
+        const emptyState = document.getElementById('invalidCodesEmptyState');
+        const emptyText = document.getElementById('invalidCodesEmptyText');
+        const footer = document.getElementById('invalidCodesFooter');
+
+        if (results) results.style.display = 'none';
+        if (footer) footer.style.display = 'none';
+        if (emptyText) emptyText.innerText = text;
+        if (emptyState) emptyState.style.display = 'block';
+    }
+
+    function setInvalidActionBusy(isBusy) {
+        invalidActionBusy = isBusy;
+        document.querySelectorAll('.invalid-code-checkbox, #selectAllInvalidRemovalCodes, #selectAllInvalidDeleteCodes').forEach((element) => {
+            element.disabled = isBusy;
+        });
+        updateInvalidActionSelection();
+    }
+
+    function setInvalidProgress({
+        visible = true,
+        stageTitle = '处理中',
+        percentText = '处理中',
+        message = '',
+        percent = 0,
+        indeterminate = false,
+        tone = 'info',
+    }) {
+        const panel = document.getElementById('invalidCodesProgressPanel');
+        const title = document.getElementById('invalidCodesProgressTitle');
+        const percentEl = document.getElementById('invalidCodesProgressPercent');
+        const fill = document.getElementById('invalidCodesProgressFill');
+        const messageEl = document.getElementById('invalidCodesProgressMessage');
+
+        if (!panel || !title || !percentEl || !fill || !messageEl) return;
+
+        if (!visible) {
+            panel.style.display = 'none';
+            panel.classList.remove('success', 'error');
+            fill.classList.remove('is-indeterminate');
+            fill.style.width = '0%';
+            return;
+        }
+
+        panel.style.display = 'flex';
+        panel.classList.toggle('success', tone === 'success');
+        panel.classList.toggle('error', tone === 'error');
+        title.innerText = stageTitle;
+        percentEl.innerText = percentText;
+        messageEl.innerText = message;
+        fill.classList.toggle('is-indeterminate', indeterminate);
+        fill.style.width = indeterminate ? '42%' : `${Math.max(0, Math.min(100, percent))}%`;
+    }
 
     function prepareFloatingDropdowns() {
         document.querySelectorAll('.dropdown-menu-floating').forEach((menu) => {
@@ -887,65 +1278,197 @@
         }
     }
 
-    function renderInvalidCodes(payload) {
-        const codes = payload?.codes || [];
-        const scannedTotal = payload?.scanned_total || 0;
-        const skippedTotal = payload?.skipped_total || 0;
-        scannedInvalidCodes = codes;
-        const emptyState = document.getElementById('invalidCodesEmptyState');
-        const emptyText = document.getElementById('invalidCodesEmptyText');
-        const tableWrapper = document.getElementById('invalidCodesTableWrapper');
-        const tableBody = document.getElementById('invalidCodesTableBody');
-        const countEl = document.getElementById('invalidCodesCount');
-        const scannedCountEl = document.getElementById('invalidCodesScannedCount');
-        const selectAll = document.getElementById('selectAllInvalidCodes');
-        const cleanupBar = document.getElementById('invalidCleanupBar');
-        const cleanupSelectedCount = document.getElementById('invalidCleanupSelectedCount');
+    function getInvalidActionTone(item) {
+        return item.can_remove_from_team ? 'warning' : 'success';
+    }
 
-        if (!tableBody || !emptyState || !tableWrapper || !countEl || !scannedCountEl || !selectAll || !cleanupBar || !cleanupSelectedCount) return;
-
-        tableBody.innerHTML = '';
-        countEl.innerText = scannedInvalidCodes.length;
-        scannedCountEl.innerText = scannedTotal;
-        selectAll.checked = false;
-        cleanupBar.style.display = 'none';
-        cleanupSelectedCount.innerText = '0';
-
-        if (!scannedInvalidCodes.length) {
-            if (emptyText) {
-                emptyText.innerText = scannedTotal > 0
-                    ? `已扫描 ${scannedTotal} 个过期兑换码，但当前没有可直接删除的项${skippedTotal > 0 ? '（仍有项未通过筛查）' : ''}。`
-                    : '当前没有扫描到可安全清理的过期兑换码。';
-            }
-            emptyState.style.display = 'block';
-            tableWrapper.style.display = 'none';
-            return;
-        }
-
-        emptyState.style.display = 'none';
-        tableWrapper.style.display = 'block';
-
-        scannedInvalidCodes.forEach((item) => {
-            const tr = document.createElement('tr');
-            const teamStatusText = item.last_team_id
-                ? `#${item.last_team_id}: ${item.last_team_status || 'unknown'}`
-                : '无关联 Team';
-            tr.innerHTML = `
-                <td><input type="checkbox" class="invalid-code-checkbox" value="${escapeHtml(item.code)}" style="width: auto; margin: 0;" onchange="updateInvalidCleanupSelection()"></td>
+    function buildInvalidCodeRow(item, group) {
+        const checkboxClass = group === 'remove' ? 'invalid-remove-checkbox' : 'invalid-delete-checkbox';
+        const teamStatusText = item.last_team_id
+            ? `#${item.last_team_id}: ${item.last_team_status || 'unknown'}`
+            : '无关联 Team';
+        const tone = getInvalidActionTone(item);
+        return `
+            <tr>
+                <td class="invalid-checkbox-cell"><input type="checkbox" class="invalid-code-checkbox ${checkboxClass}" value="${escapeHtml(item.code)}" style="width: auto; margin: 0;" onchange="updateInvalidActionSelection()"></td>
                 <td><code>${escapeHtml(item.code)}</code></td>
                 <td>${escapeHtml(formatDateTime(item.expired_at))}</td>
                 <td>${escapeHtml(item.last_record_email || '-')}</td>
                 <td>${escapeHtml(item.record_count)}</td>
                 <td>${escapeHtml(teamStatusText)}</td>
-                <td>${escapeHtml(item.cleanup_action_label || item.cleanup_action || '-')}</td>
+                <td><span class="invalid-action-badge ${tone}">${escapeHtml(item.cleanup_action_label || item.cleanup_action || '-')}</span></td>
                 <td>${escapeHtml(item.reason || '-')}</td>
-            `;
-            tableBody.appendChild(tr);
+            </tr>
+        `;
+    }
+
+    function renderInvalidTableGroup(group, items) {
+        const body = document.getElementById(group === 'remove' ? 'invalidRemoveTableBody' : 'invalidDeleteTableBody');
+        const wrapper = document.getElementById(group === 'remove' ? 'invalidRemoveTableWrapper' : 'invalidDeleteTableWrapper');
+        const empty = document.getElementById(group === 'remove' ? 'invalidRemoveEmpty' : 'invalidDeleteEmpty');
+        const count = document.getElementById(group === 'remove' ? 'invalidRemoveCount' : 'invalidDeleteCount');
+        const selectAll = document.getElementById(group === 'remove' ? 'selectAllInvalidRemovalCodes' : 'selectAllInvalidDeleteCodes');
+
+        if (!body || !wrapper || !empty || !count || !selectAll) return;
+
+        body.innerHTML = '';
+        count.innerText = items.length;
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+        selectAll.disabled = invalidActionBusy || !items.length;
+
+        if (!items.length) {
+            wrapper.style.display = 'none';
+            empty.style.display = 'block';
+            return;
+        }
+
+        wrapper.style.display = 'block';
+        empty.style.display = 'none';
+        body.innerHTML = items.map((item) => buildInvalidCodeRow(item, group)).join('');
+    }
+
+    function renderInvalidCodes(payload, options = {}) {
+        if (Array.isArray(payload?.codes)) {
+            scannedInvalidCodes = payload.codes;
+        }
+        if (typeof payload?.scanned_total === 'number') {
+            invalidScanMeta.scannedTotal = payload.scanned_total;
+        }
+        if (typeof payload?.skipped_total === 'number') {
+            invalidScanMeta.skippedTotal = payload.skipped_total;
+        }
+
+        const scannedTotal = invalidScanMeta.scannedTotal || scannedInvalidCodes.length;
+        const skippedTotal = invalidScanMeta.skippedTotal || 0;
+        const needsRemoval = scannedInvalidCodes.filter((item) => item.can_remove_from_team);
+        const readyToDelete = scannedInvalidCodes.filter((item) => item.can_delete);
+        const emptyState = document.getElementById('invalidCodesEmptyState');
+        const emptyText = document.getElementById('invalidCodesEmptyText');
+        const results = document.getElementById('invalidCodesResults');
+        const footer = document.getElementById('invalidCodesFooter');
+        const scannedCountEl = document.getElementById('invalidCodesScannedCount');
+        const needsCountEl = document.getElementById('invalidNeedsRemovalCount');
+        const readyCountEl = document.getElementById('invalidReadyDeleteCount');
+
+        if (!emptyState || !emptyText || !results || !footer || !scannedCountEl || !needsCountEl || !readyCountEl) return;
+
+        scannedCountEl.innerText = scannedTotal;
+        needsCountEl.innerText = needsRemoval.length;
+        readyCountEl.innerText = readyToDelete.length;
+
+        if (!scannedInvalidCodes.length) {
+            emptyText.innerText = scannedTotal > 0
+                ? `已扫描 ${scannedTotal} 个过期兑换码，但当前没有需要后续处理的项${skippedTotal > 0 ? '（仍有项未通过筛查）' : ''}。`
+                : '当前没有扫描到需要处理的过期兑换码。';
+            emptyState.style.display = 'block';
+            results.style.display = 'none';
+            footer.style.display = 'none';
+            return;
+        }
+
+        emptyState.style.display = 'none';
+        results.style.display = 'block';
+        footer.style.display = 'flex';
+
+        renderInvalidTableGroup('remove', needsRemoval);
+        renderInvalidTableGroup('delete', readyToDelete);
+
+        if (options.preselectDeleteCodes?.length) {
+            const preselectedCodes = new Set(options.preselectDeleteCodes);
+            document.querySelectorAll('.invalid-delete-checkbox').forEach((checkbox) => {
+                checkbox.checked = preselectedCodes.has(checkbox.value);
+            });
+        }
+
+        updateInvalidActionSelection();
+        if (window.lucide) {
+            lucide.createIcons();
+        }
+    }
+
+    function toggleSelectAllInvalidGroup(group, checkbox) {
+        const selector = group === 'remove' ? '.invalid-remove-checkbox' : '.invalid-delete-checkbox';
+        document.querySelectorAll(selector).forEach((item) => {
+            item.checked = checkbox.checked;
         });
+        updateInvalidActionSelection();
+    }
+
+    function syncInvalidGroupMasterCheckbox(group) {
+        const selector = group === 'remove' ? '.invalid-remove-checkbox' : '.invalid-delete-checkbox';
+        const master = document.getElementById(group === 'remove' ? 'selectAllInvalidRemovalCodes' : 'selectAllInvalidDeleteCodes');
+        const checkboxes = Array.from(document.querySelectorAll(selector));
+
+        if (!master) return;
+        if (!checkboxes.length) {
+            master.checked = false;
+            master.indeterminate = false;
+            return;
+        }
+
+        const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+        master.checked = checkedCount > 0 && checkedCount === checkboxes.length;
+        master.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+    }
+
+    function getSelectedInvalidCodes(group) {
+        const selector = group === 'remove' ? '.invalid-remove-checkbox:checked' : '.invalid-delete-checkbox:checked';
+        return Array.from(document.querySelectorAll(selector)).map((item) => item.value);
+    }
+
+    function updateInvalidActionSelection() {
+        const footer = document.getElementById('invalidCodesFooter');
+        const totalEl = document.getElementById('invalidActionSelectedTotal');
+        const breakdownEl = document.getElementById('invalidActionSelectedBreakdown');
+        const removeButton = document.getElementById('invalidRemoveButton');
+        const deleteButton = document.getElementById('invalidDeleteButton');
+        const removeSelected = getSelectedInvalidCodes('remove');
+        const deleteSelected = getSelectedInvalidCodes('delete');
+        const totalSelected = removeSelected.length + deleteSelected.length;
+
+        syncInvalidGroupMasterCheckbox('remove');
+        syncInvalidGroupMasterCheckbox('delete');
+
+        if (footer) {
+            footer.style.display = scannedInvalidCodes.length ? 'flex' : 'none';
+        }
+        if (totalEl) {
+            totalEl.innerText = totalSelected;
+        }
+        if (breakdownEl) {
+            breakdownEl.innerText = `待移出 Team ${removeSelected.length} 项，可删除 ${deleteSelected.length} 项`;
+        }
+        if (removeButton) {
+            removeButton.disabled = invalidActionBusy || removeSelected.length === 0;
+        }
+        if (deleteButton) {
+            deleteButton.disabled = invalidActionBusy || deleteSelected.length === 0;
+        }
+    }
+
+    function mergeInvalidCodeUpdates(updatedCodes) {
+        if (!Array.isArray(updatedCodes) || !updatedCodes.length) return;
+        const updatedCodeMap = new Map(updatedCodes.map((item) => [item.code, item]));
+        scannedInvalidCodes = scannedInvalidCodes.map((item) => updatedCodeMap.get(item.code) || item);
     }
 
     async function scanInvalidCodes() {
+        if (invalidActionBusy) return;
+
+        showModal('invalidCodesModal');
+        resetInvalidCodesModal();
+        setInvalidActionBusy(true);
+        setInvalidProgress({
+            visible: true,
+            stageTitle: '扫描中',
+            percentText: '处理中',
+            message: '正在扫描过期兑换码并按最后一次兑换记录分类展示…',
+            indeterminate: true,
+        });
+
         try {
+            await waitForNextPaint();
             const response = await fetch('/admin/codes/invalid/scan', {
                 method: 'POST',
                 headers: {
@@ -956,43 +1479,140 @@
 
             if (response.ok && result.success) {
                 renderInvalidCodes(result);
-                showModal('invalidCodesModal');
-                if (window.lucide) {
-                    lucide.createIcons();
-                }
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '扫描完成',
+                    percentText: '100%',
+                    message: `已扫描 ${result.scanned_total || 0} 个过期兑换码，待移出 ${result.requires_team_removal_total || 0} 个，可直接删除 ${result.ready_to_delete_total || 0} 个。`,
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'success',
+                });
             } else {
+                showInvalidEmptyState(result.error || '扫描失败，请稍后重试');
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '扫描失败',
+                    percentText: '失败',
+                    message: result.error || '扫描失败，请稍后重试',
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'error',
+                });
                 showToast(result.error || '扫描失败', 'error');
             }
         } catch (error) {
+            showInvalidEmptyState('扫描失败，请检查网络后重试。');
+            setInvalidProgress({
+                visible: true,
+                stageTitle: '扫描失败',
+                percentText: '失败',
+                message: '网络错误，请稍后重试。',
+                percent: 100,
+                indeterminate: false,
+                tone: 'error',
+            });
             showToast('网络错误', 'error');
+        } finally {
+            setInvalidActionBusy(false);
         }
     }
 
-    function toggleSelectAllInvalidCodes(checkbox) {
-        document.querySelectorAll('.invalid-code-checkbox').forEach((item) => {
-            item.checked = checkbox.checked;
-        });
-        updateInvalidCleanupSelection();
-    }
-
-    function updateInvalidCleanupSelection() {
-        const selected = document.querySelectorAll('.invalid-code-checkbox:checked');
-        const cleanupBar = document.getElementById('invalidCleanupBar');
-        const cleanupSelectedCount = document.getElementById('invalidCleanupSelectedCount');
-        if (!cleanupBar || !cleanupSelectedCount) return;
-
-        cleanupSelectedCount.innerText = selected.length;
-        cleanupBar.style.display = selected.length > 0 ? 'flex' : 'none';
-    }
-
-    async function cleanupInvalidCodes() {
-        const selected = Array.from(document.querySelectorAll('.invalid-code-checkbox:checked')).map((item) => item.value);
+    async function removeSelectedInvalidCodeTeams() {
+        const selected = getSelectedInvalidCodes('remove');
         if (!selected.length) {
-            showToast('请先选择需要清理的兑换码', 'error');
+            showToast('请先选择需要移出 Team 的兑换码', 'error');
             return;
         }
 
+        setInvalidActionBusy(true);
+        setInvalidProgress({
+            visible: true,
+            stageTitle: '移出 Team 中',
+            percentText: '处理中',
+            message: `正在处理 ${selected.length} 个待移出 Team 的兑换码…`,
+            indeterminate: true,
+        });
+
         try {
+            await waitForNextPaint();
+            const response = await fetch('/admin/codes/invalid/remove-from-team', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ codes: selected })
+            });
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                mergeInvalidCodeUpdates(result.updated_codes || []);
+                renderInvalidCodes(
+                    {
+                        codes: scannedInvalidCodes,
+                        scanned_total: invalidScanMeta.scannedTotal,
+                        skipped_total: invalidScanMeta.skippedTotal,
+                    },
+                    {
+                        preselectDeleteCodes: result.removed_codes || [],
+                    }
+                );
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '移出 Team 完成',
+                    percentText: '100%',
+                    message: result.message || '已完成 Team 邮箱移出，现在可以继续删除兑换码。',
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'success',
+                });
+                showToast(result.message || '移出 Team 成功', 'success');
+            } else {
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '移出 Team 失败',
+                    percentText: '失败',
+                    message: result.error || '移出 Team 失败，请稍后重试。',
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'error',
+                });
+                showToast(result.error || '移出 Team 失败', 'error');
+            }
+        } catch (error) {
+            setInvalidProgress({
+                visible: true,
+                stageTitle: '移出 Team 失败',
+                percentText: '失败',
+                message: '网络错误，请稍后重试。',
+                percent: 100,
+                indeterminate: false,
+                tone: 'error',
+            });
+            showToast('网络错误', 'error');
+        } finally {
+            setInvalidActionBusy(false);
+        }
+    }
+
+    async function cleanupInvalidCodes() {
+        const selected = getSelectedInvalidCodes('delete');
+        if (!selected.length) {
+            showToast('请先选择需要删除的兑换码', 'error');
+            return;
+        }
+
+        setInvalidActionBusy(true);
+        setInvalidProgress({
+            visible: true,
+            stageTitle: '删除中',
+            percentText: '处理中',
+            message: `正在删除 ${selected.length} 个已满足条件的兑换码…`,
+            indeterminate: true,
+        });
+
+        try {
+            await waitForNextPaint();
             const response = await fetch('/admin/codes/invalid/cleanup', {
                 method: 'POST',
                 headers: {
@@ -1003,14 +1623,45 @@
 
             const result = await response.json();
             if (response.ok && result.success) {
-                hideModal('invalidCodesModal');
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '删除完成',
+                    percentText: '100%',
+                    message: result.message || '无效兑换码清理完成。',
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'success',
+                });
                 showToast(result.message || '清理成功', 'success');
-                setTimeout(() => window.location.reload(), 1000);
+                setTimeout(() => {
+                    hideModal('invalidCodesModal');
+                    window.location.reload();
+                }, 900);
             } else {
+                setInvalidProgress({
+                    visible: true,
+                    stageTitle: '删除失败',
+                    percentText: '失败',
+                    message: result.error || '删除失败，请稍后重试。',
+                    percent: 100,
+                    indeterminate: false,
+                    tone: 'error',
+                });
                 showToast(result.error || '清理失败', 'error');
             }
         } catch (error) {
+            setInvalidProgress({
+                visible: true,
+                stageTitle: '删除失败',
+                percentText: '失败',
+                message: '网络错误，请稍后重试。',
+                percent: 100,
+                indeterminate: false,
+                tone: 'error',
+            });
             showToast('网络错误', 'error');
+        } finally {
+            setInvalidActionBusy(false);
         }
     }
 

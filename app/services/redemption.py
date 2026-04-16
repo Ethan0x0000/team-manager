@@ -12,7 +12,13 @@ from sqlalchemy import select, update, delete, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import RedemptionCode, RedemptionInviteMarker, RedemptionRecord, Team
+from app.models import (
+    RedemptionCode,
+    RedemptionInviteMarker,
+    RedemptionRecord,
+    Team,
+    TeamEmailMapping,
+)
 from app.services.settings import (
     settings_service,
     WARRANTY_EXPIRATION_MODE_REFRESH_ON_REDEEM,
@@ -153,13 +159,92 @@ class RedemptionService:
             return True
         return str(redemption_code.status or "").strip().lower() == "expired"
 
+    @staticmethod
+    def _compose_invalid_code_candidate(
+        *,
+        redemption_code: RedemptionCode,
+        record_count: int,
+        cleanup_reference_time: Optional[datetime],
+        last_team_id: Optional[int],
+        last_team_status: str,
+        last_record_email: Optional[str],
+        last_record_redeemed_at: Optional[datetime],
+        cleanup_action: str,
+        cleanup_action_label: str,
+        reason: str,
+        can_remove_from_team: bool,
+        can_delete: bool,
+    ) -> Dict[str, Any]:
+        team_status_summary = [
+            {
+                "team_id": last_team_id if last_team_id is not None else "-",
+                "status": last_team_status,
+            }
+        ]
+
+        return {
+            "code": redemption_code.code,
+            "status": "expired",
+            "record_count": record_count,
+            "expired_at": cleanup_reference_time.isoformat()
+            if cleanup_reference_time
+            else None,
+            "team_statuses": team_status_summary,
+            "last_team_id": last_team_id,
+            "last_team_status": last_team_status,
+            "last_record_email": last_record_email,
+            "last_record_redeemed_at": last_record_redeemed_at.isoformat()
+            if last_record_redeemed_at
+            else None,
+            "cleanup_action": cleanup_action,
+            "cleanup_action_label": cleanup_action_label,
+            "reason": reason,
+            "can_remove_from_team": can_remove_from_team,
+            "can_delete": can_delete,
+            "classification": (
+                "needs_team_removal" if can_remove_from_team else "ready_to_delete"
+            ),
+        }
+
+    @staticmethod
+    async def _is_team_email_still_present(
+        team_id: Optional[int],
+        email: Optional[str],
+        db_session: AsyncSession,
+    ) -> Optional[bool]:
+        """只读检查目标邮箱当前是否仍存在于本地 Team 邮箱映射中。"""
+        from app.services.team import (
+            ACTIVE_TEAM_EMAIL_STATUSES,
+            TEAM_EMAIL_STATUS_REMOVED,
+        )
+
+        normalized_email = str(email or "").strip().lower()
+        if team_id is None or not normalized_email:
+            return None
+
+        result = await db_session.execute(
+            select(TeamEmailMapping.status).where(
+                TeamEmailMapping.team_id == team_id,
+                TeamEmailMapping.email == normalized_email,
+            )
+        )
+        mapping_status = result.scalar_one_or_none()
+        if mapping_status is None:
+            return None
+
+        normalized_status = str(mapping_status or "").strip().lower()
+        if normalized_status in ACTIVE_TEAM_EMAIL_STATUSES:
+            return True
+        if normalized_status == TEAM_EMAIL_STATUS_REMOVED:
+            return False
+        return None
+
     async def _build_invalid_code_candidate(
         self, redemption_code: RedemptionCode, db_session: AsyncSession
     ) -> Optional[Dict[str, Any]]:
-        """按“最后一次兑换记录”两层筛查规则判断兑换码是否可删除。"""
-        from app.services.team import NORMAL_TEAM_STATUSES, TeamService, team_service
+        """按“最后一次兑换记录”两层筛查规则分类过期兑换码。"""
+        from app.services.team import NORMAL_TEAM_STATUSES, TeamService
 
-        self._sync_code_status_fields(redemption_code)
         if not self._is_expired_for_invalid_scan(redemption_code):
             return None
 
@@ -187,8 +272,10 @@ class RedemptionService:
         last_record_email = redemption_code.used_by_email
         last_record_redeemed_at = redemption_code.used_at
         cleanup_action = "no_redemption_record"
-        cleanup_action_label = "无兑换记录，直接标记为可删除"
+        cleanup_action_label = "无兑换记录，可直接删除"
         reason = "兑换码已过期且无可追溯的兑换记录"
+        can_remove_from_team = False
+        can_delete = True
 
         if latest_record is not None:
             last_team_id = latest_record.team_id
@@ -199,73 +286,54 @@ class RedemptionService:
             if team is not None and team.deleted_at is None:
                 last_team_status = TeamService.get_effective_team_status(team)
                 if last_team_status in NORMAL_TEAM_STATUSES:
-                    team_result = await team_service.remove_invite_or_member(
+                    email_still_present = await self._is_team_email_still_present(
                         latest_record.team_id,
-                        latest_record.email,
+                        last_record_email,
                         db_session,
                     )
-                    if not team_result.get("success"):
-                        logger.warning(
-                            "扫描过期兑换码 %s 时，无法从正常 Team %s 移除邮箱 %s: %s",
-                            redemption_code.code,
-                            latest_record.team_id,
-                            latest_record.email,
-                            team_result.get("error") or team_result.get("message"),
-                        )
-                        return None
-
-                    team_message = str(team_result.get("message") or "")
-                    if "不存在" in team_message:
-                        cleanup_action = "email_already_missing_from_normal_team"
-                        cleanup_action_label = "正常 Team 中已无该邮箱，可删除兑换码"
+                    if email_still_present is False:
+                        cleanup_action = "team_email_already_absent"
+                        cleanup_action_label = "Team 中已无该邮箱，可直接删除"
                         reason = (
-                            "最后一次兑换记录对应的 Team 仍正常，但该邮箱已不在 Team 中，"
-                            "现可删除兑换码"
+                            "最后一次兑换记录对应的 Team 仍正常，但该邮箱已不在当前成员/邀请列表中，"
+                            "可直接删除兑换码"
                         )
+                        can_remove_from_team = False
+                        can_delete = True
                     else:
-                        cleanup_action = "removed_from_normal_team"
-                        cleanup_action_label = "正常 Team 邮箱已移除，可删除兑换码"
+                        cleanup_action = "requires_team_removal"
+                        cleanup_action_label = "需先移出 Team 邮箱"
                         reason = (
-                            "最后一次兑换记录对应的 Team 仍正常，已先移除该邮箱，"
-                            "现可删除兑换码"
+                            "最后一次兑换记录对应的 Team 仍正常，请先确认移出该邮箱，"
+                            "再执行删除操作"
                         )
+                        can_remove_from_team = True
+                        can_delete = False
                 else:
                     cleanup_action = "team_already_invalid"
-                    cleanup_action_label = "最后一次 Team 已失效，直接可删除"
-                    reason = "最后一次兑换记录对应的 Team 已失效，直接标记为可删除"
+                    cleanup_action_label = "最后一次 Team 已失效，可直接删除"
+                    reason = "最后一次兑换记录对应的 Team 已失效，当前可直接删除兑换码"
             else:
                 cleanup_action = "team_already_invalid"
-                cleanup_action_label = "最后一次 Team 已删除，直接可删除"
-                reason = "最后一次兑换记录对应的 Team 已删除，直接标记为可删除"
+                cleanup_action_label = "最后一次 Team 已删除，可直接删除"
+                reason = "最后一次兑换记录对应的 Team 已删除，当前可直接删除兑换码"
         elif redemption_code.used_team_id is not None:
             last_team_id = redemption_code.used_team_id
 
-        team_status_summary = [
-            {
-                "team_id": last_team_id if last_team_id is not None else "-",
-                "status": last_team_status,
-            }
-        ]
-
-        return {
-            "code": redemption_code.code,
-            "status": "expired",
-            "record_count": record_count,
-            "expired_at": cleanup_reference_time.isoformat()
-            if cleanup_reference_time
-            else None,
-            "team_statuses": team_status_summary,
-            "last_team_id": last_team_id,
-            "last_team_status": last_team_status,
-            "last_record_email": last_record_email,
-            "last_record_redeemed_at": last_record_redeemed_at.isoformat()
-            if last_record_redeemed_at
-            else None,
-            "cleanup_action": cleanup_action,
-            "cleanup_action_label": cleanup_action_label,
-            "reason": reason,
-            "can_delete": True,
-        }
+        return self._compose_invalid_code_candidate(
+            redemption_code=redemption_code,
+            record_count=record_count,
+            cleanup_reference_time=cleanup_reference_time,
+            last_team_id=last_team_id,
+            last_team_status=last_team_status,
+            last_record_email=last_record_email,
+            last_record_redeemed_at=last_record_redeemed_at,
+            cleanup_action=cleanup_action,
+            cleanup_action_label=cleanup_action_label,
+            reason=reason,
+            can_remove_from_team=can_remove_from_team,
+            can_delete=can_delete,
+        )
 
     async def _collect_invalid_code_candidates(
         self,
@@ -290,7 +358,6 @@ class RedemptionService:
         skipped_codes: List[str] = []
 
         for code in codes:
-            self._sync_code_status_fields(code)
             if not self._is_expired_for_invalid_scan(code):
                 continue
 
@@ -307,20 +374,27 @@ class RedemptionService:
     async def get_invalid_code_candidates(
         self, db_session: AsyncSession, pool_type: Optional[str] = "normal"
     ) -> Dict[str, Any]:
-        """扫描过期兑换码，并按最后一次兑换记录执行两层筛查。"""
+        """扫描过期兑换码，并按最后一次兑换记录分类展示后续动作。"""
         try:
-            await self._sync_pool_code_statuses(db_session, pool_type)
             (
                 candidates,
                 scanned_total,
                 skipped_codes,
             ) = await self._collect_invalid_code_candidates(db_session, pool_type)
+            requires_team_removal_total = sum(
+                1 for item in candidates if item.get("can_remove_from_team")
+            )
+            ready_to_delete_total = sum(
+                1 for item in candidates if item.get("can_delete")
+            )
 
             return {
                 "success": True,
                 "codes": candidates,
                 "total": len(candidates),
                 "scanned_total": scanned_total,
+                "requires_team_removal_total": requires_team_removal_total,
+                "ready_to_delete_total": ready_to_delete_total,
                 "skipped_total": len(skipped_codes),
                 "skipped_codes": skipped_codes,
                 "error": None,
@@ -332,9 +406,139 @@ class RedemptionService:
                 "codes": [],
                 "total": 0,
                 "scanned_total": 0,
+                "requires_team_removal_total": 0,
+                "ready_to_delete_total": 0,
                 "skipped_total": 0,
                 "skipped_codes": [],
                 "error": "扫描无效兑换码失败，请稍后重试",
+            }
+
+    async def remove_invalid_code_team_members(
+        self,
+        codes: List[str],
+        db_session: AsyncSession,
+        pool_type: Optional[str] = "normal",
+    ) -> Dict[str, Any]:
+        """对扫描结果中仍绑定正常 Team 的兑换码执行显式移除。"""
+        from app.services.team import team_service
+
+        try:
+            if not codes:
+                return {"success": False, "error": "请选择需要移出 Team 的兑换码"}
+
+            code_filter = {
+                str(code or "").strip() for code in codes if str(code or "").strip()
+            }
+            candidates, _, _ = await self._collect_invalid_code_candidates(
+                db_session,
+                pool_type=pool_type,
+                code_filter=code_filter,
+            )
+            candidate_map = {item["code"]: item for item in candidates}
+
+            removable_candidates = [
+                candidate_map[code]
+                for code in codes
+                if candidate_map.get(code, {}).get("can_remove_from_team")
+            ]
+            blocked_codes = [
+                code
+                for code in codes
+                if code not in candidate_map
+                or not candidate_map[code].get("can_remove_from_team")
+            ]
+
+            if not removable_candidates:
+                return {
+                    "success": False,
+                    "error": "所选兑换码当前无需移出 Team 邮箱，或已不满足处理条件",
+                }
+
+            updated_codes: List[Dict[str, Any]] = []
+            failed_items: List[Dict[str, str]] = []
+
+            for candidate in removable_candidates:
+                team_id = candidate.get("last_team_id")
+                email = candidate.get("last_record_email")
+                if team_id is None or not email:
+                    failed_items.append(
+                        {
+                            "code": candidate["code"],
+                            "error": "缺少最后一次兑换记录对应的 Team 或邮箱信息",
+                        }
+                    )
+                    continue
+
+                team_result = await team_service.remove_invite_or_member(
+                    team_id, email, db_session
+                )
+                if not team_result.get("success"):
+                    failed_items.append(
+                        {
+                            "code": candidate["code"],
+                            "error": str(
+                                team_result.get("error")
+                                or team_result.get("message")
+                                or "移除失败"
+                            ),
+                        }
+                    )
+                    continue
+
+                team_message = str(team_result.get("message") or "")
+                if "不存在" in team_message:
+                    cleanup_action_label = "Team 中已无该邮箱，可继续删除"
+                    reason = (
+                        "最后一次兑换记录对应的 Team 仍正常，但该邮箱已不在 Team 中，"
+                        "现在可删除兑换码"
+                    )
+                else:
+                    cleanup_action_label = "已移出 Team 邮箱，可继续删除"
+                    reason = "已按确认移出最后一次兑换记录对应 Team 中的邮箱，现在可删除兑换码"
+
+                updated_codes.append(
+                    {
+                        **candidate,
+                        "cleanup_action": "ready_to_delete_after_team_removal",
+                        "cleanup_action_label": cleanup_action_label,
+                        "reason": reason,
+                        "can_remove_from_team": False,
+                        "can_delete": True,
+                        "classification": "ready_to_delete",
+                    }
+                )
+
+            if not updated_codes:
+                first_error = (
+                    failed_items[0]["error"] if failed_items else "移出 Team 邮箱失败"
+                )
+                return {
+                    "success": False,
+                    "error": first_error,
+                    "failed_codes": failed_items,
+                    "blocked_codes": blocked_codes,
+                }
+
+            message = f"已处理 {len(updated_codes)} 个 Team 邮箱，可继续删除对应兑换码"
+            if failed_items:
+                message += f"，另有 {len(failed_items)} 个移除失败"
+            if blocked_codes:
+                message += f"，{len(blocked_codes)} 个无需移除或已变更"
+
+            return {
+                "success": True,
+                "message": message,
+                "removed_codes": [item["code"] for item in updated_codes],
+                "updated_codes": updated_codes,
+                "failed_codes": failed_items,
+                "blocked_codes": blocked_codes,
+                "error": None,
+            }
+        except Exception:
+            logger.exception("移出无效兑换码对应 Team 邮箱失败")
+            return {
+                "success": False,
+                "error": "移出 Team 邮箱失败，请稍后重试",
             }
 
     async def cleanup_invalid_codes(
@@ -357,11 +561,32 @@ class RedemptionService:
                 code_filter=code_filter,
             )
 
-            candidate_codes = {item["code"] for item in candidates}
-            requested_codes = [code for code in codes if code in candidate_codes]
-            rejected_codes = [code for code in codes if code not in candidate_codes]
+            candidate_map = {item["code"]: item for item in candidates}
+            requested_codes = [
+                code for code in codes if candidate_map.get(code, {}).get("can_delete")
+            ]
+            requires_team_removal_codes = [
+                code
+                for code in codes
+                if candidate_map.get(code, {}).get("can_remove_from_team")
+            ]
+            rejected_codes = [
+                code
+                for code in codes
+                if code not in candidate_map
+                or (
+                    code not in requested_codes
+                    and code not in requires_team_removal_codes
+                )
+            ]
 
             if not requested_codes:
+                if requires_team_removal_codes:
+                    return {
+                        "success": False,
+                        "error": "所选兑换码仍绑定正常 Team，请先执行“移出 Team 邮箱”再删除",
+                        "requires_team_removal_codes": requires_team_removal_codes,
+                    }
                 return {
                     "success": False,
                     "error": "所选兑换码不满足无效清理条件，已拒绝删除",
