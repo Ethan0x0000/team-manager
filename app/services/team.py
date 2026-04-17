@@ -758,8 +758,21 @@ class TeamService:
                     return new_at
                 else:
                     # 检查是否为致命错误 (如 account_deactivated)
+                    prev_status = team.status
+                    prev_error_count = team.error_count or 0
                     if await self._handle_api_error(refresh_result, team, db_session):
-                        return None
+                        if team.status == "banned":
+                            return None  # 真正的封禁，尊重判定
+                        if force_refresh and current_valid_token:
+                            # 刷新失败是非关键错误，当前 AT 仍可用，恢复原状态继续尝试
+                            team.status = prev_status
+                            team.error_count = prev_error_count
+                            await db_session.commit()
+                            logger.info(
+                                f"Team {team.id} RT 强制刷新失败但当前 AT 仍有效，保持原状态继续"
+                            )
+                        else:
+                            return None
 
         # 4. 兜底尝试使用 session_token 刷新
         if team.session_token_encrypted:
@@ -797,8 +810,21 @@ class TeamService:
                 return new_at
             else:
                 # 检查是否为致命错误 (如 token_invalidated)
+                prev_status = team.status
+                prev_error_count = team.error_count or 0
                 if await self._handle_api_error(refresh_result, team, db_session):
-                    return None
+                    if team.status == "banned":
+                        return None  # 真正的封禁，尊重判定
+                    if force_refresh and current_valid_token:
+                        # 刷新失败是非关键错误，当前 AT 仍可用，恢复原状态
+                        team.status = prev_status
+                        team.error_count = prev_error_count
+                        await db_session.commit()
+                        logger.info(
+                            f"Team {team.id} ST 强制刷新失败但当前 AT 仍有效，保持原状态"
+                        )
+                    else:
+                        return None
 
         # force_refresh 场景下，如果刷新链路失败但当前 AT 仍可用，则回退到当前 AT，
         # 避免“误判过期”导致状态被错误写成 expired。
