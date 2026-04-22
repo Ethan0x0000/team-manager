@@ -7,7 +7,9 @@
     <title>GPT Team 兑换</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="/static/css/user.css?v=20260317-theme-flicker-fix-1">
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
@@ -68,7 +70,8 @@
                                 <label for="email">邮箱地址 <span class="required-star">*</span></label>
                                 <div class="field-wrap">
                                     <i data-lucide="mail" class="field-icon"></i>
-                                    <input type="email" id="email" name="email" required placeholder="your@email.com" class="form-input">
+                                    <input type="email" id="email" name="email" required placeholder="your@email.com"
+                                        class="form-input">
                                 </div>
                                 <p class="field-hint">邀请邮件将发送到该地址，请确认可正常接收。</p>
                             </div>
@@ -77,7 +80,8 @@
                                 <label for="code">兑换码 <span class="required-star">*</span></label>
                                 <div class="field-wrap">
                                     <i data-lucide="key-round" class="field-icon"></i>
-                                    <input type="text" id="code" name="code" required placeholder="XXXX-XXXX-XXXX-XXXX" class="form-input">
+                                    <input type="text" id="code" name="code" required placeholder="XXXX-XXXX-XXXX-XXXX"
+                                        class="form-input">
                                 </div>
                                 <p class="field-hint">兑换码区分大小写，请复制粘贴避免输错。</p>
                             </div>
@@ -96,7 +100,7 @@
 
                         <div class="info-box">
                             <i data-lucide="clipboard-check" class="info-icon"></i>
-                            <p>质保期为 <strong>一个月</strong>，在有效期内可用原兑换码重新加入 Team。</p>
+                            <p>质保期为 <strong>商品描述天数</strong>，在有效期内可用原兑换码重新加入 Team。</p>
                         </div>
 
                         <div class="warranty-query-row">
@@ -104,7 +108,8 @@
                                 <i data-lucide="search" class="field-icon"></i>
                                 <input type="text" id="warrantyInput" placeholder="请输入原兑换码或邮箱进行查询" class="form-input">
                             </div>
-                            <button type="button" class="btn btn-secondary" id="checkWarrantyBtn" onclick="checkWarranty()">
+                            <button type="button" class="btn btn-secondary" id="checkWarrantyBtn"
+                                onclick="checkWarranty()">
                                 <i data-lucide="search-check"></i> 查询质保状态
                             </button>
                         </div>
@@ -160,8 +165,8 @@
 
     <script>
         window.REDEEM_ANNOUNCEMENT = {
-            enabled: {{ announcement_enabled|tojson }},
-            markdown: {{ announcement_markdown|tojson }}
+            enabled: {{ announcement_enabled | tojson }},
+        markdown: { { announcement_markdown | tojson } }
         };
     </script>
 
